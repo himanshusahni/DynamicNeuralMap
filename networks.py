@@ -38,7 +38,7 @@ class MapStep(nn.Module):
         print("Total conv params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
 
     def forward(self, x):
-        return torch.sigmoid(self.conv(x))
+        return torch.tanh(self.conv(x))
 
 
 class MapWrite(nn.Module):

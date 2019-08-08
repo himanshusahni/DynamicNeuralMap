@@ -55,7 +55,7 @@ class DynamicMap():
         uses the model to advance the map by a step
         :param action: (batchsize,) actions taken by agent
         """
-        # only dyanamic part of map is stepped
+        # only dynamic part of map is stepped
         dynamic = self.map[:, :, :, 8:]
         dynamic = self.step_model(dynamic.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
         self.map[:, :, :, 8:] = dynamic

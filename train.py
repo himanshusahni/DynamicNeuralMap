@@ -106,7 +106,7 @@ for epoch in range(40000):
         write_loss = map.write(input_glimpses, attn)
         for t in range(1, seq_len):
             # step forward the internal map
-            # map.step(action_batch[t-1])
+            map.step(action_batch[t-1])
             # select next attention spot
             # loc = np.random.rand(BATCH_SIZE, 2)  # glimpse location (x,y) in [0,1]
             # loc = (loc*10)  # above in [0, 10]
@@ -165,8 +165,7 @@ for epoch in range(40000):
             for t in range(1, seq_len):
                 test_maps_prestep.append(map.reconstruct().detach().cpu())
                 # step forward the internal map
-                # map.step(action_batch[t-1])
-                test_maps_poststep.append(reconstruction.detach().cpu())
+                map.step(action_batch[t-1])
                 # select next attention spot
                 loc = all_loc[t]
                 attn = loc[range(1), :, np.newaxis] + xy  # get all indices in attention window size
@@ -176,6 +175,7 @@ for epoch in range(40000):
                 input_glimpses = input_glimpses.to(device)
                 # compute reconstruction loss
                 reconstruction = map.reconstruct()
+                test_maps_poststep.append(reconstruction.detach().cpu())
                 output_glimpses = reconstruction[0, :, attn[0, 0, :], attn[0, 1, :]].view(-1, ATTN_SIZE, ATTN_SIZE)
                 loss = mse(output_glimpses, input_glimpses)
                 test_loss += loss.item()
