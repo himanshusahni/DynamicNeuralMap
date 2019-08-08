@@ -57,8 +57,8 @@ class GoalSearchEnv(object):
         x = np.arange(size).reshape((size, 1))
         y = np.tile(np.arange(size), (size, 1))
         map_onehot[x, y, indices] = 1
-        # but could have empty space! if max probability thing is < 0.5, it's empty
-        map_onehot *= (map > 0.5)
+        # but could have empty space! if max probability thing is < 0, it's empty
+        map_onehot *= (map > 0.)
         map = map_onehot
         # now create an image out of it
         map_image = 255 * np.ones((size, size, 3))

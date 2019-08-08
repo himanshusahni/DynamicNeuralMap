@@ -28,7 +28,7 @@ class CurriculumDataset(Dataset):
         if preload:
             self.imgs = []
             self.actions = []
-        # for ep in range(150):
+        # for ep in range(1000):
         for ep in range(self.nb_eps):
             ep_dir = os.path.join(demo_dir, str(ep))
             # nb samples is episode length - 1 bcs. predicting next state
@@ -38,7 +38,9 @@ class CurriculumDataset(Dataset):
             self.ep_steps.append(self.ep_steps[-1] + nb_samples)
             if preload:
                 print("preloading ep {}/{}".format(ep, self.nb_eps))
-                self.imgs.append([torch.load(os.path.join(ep_dir, '{}.pt'.format(step))) for step in range(nb_samples+1)])
+                all_imgs = [torch.load(os.path.join(ep_dir, '{}.pt'.format(step))) for step in range(nb_samples+1)]
+                all_imgs = torch.cat([img.unsqueeze(dim=0) for img in all_imgs], dim=0).to("cuda:0").share_memory_()
+                self.imgs.append(all_imgs)
                 self.actions.append(torch.load(os.path.join(ep_dir, 'actions.pt')))
 
     def __len__(self):
@@ -111,6 +113,20 @@ def postprocess(img):
     return (((np.transpose(img, (0, 2, 3, 1))+1)/2.)*255).astype(np.uint8)
 
 
+def save_one_img(map, path, env, loc=None, size=None, attn_size=None):
+    img = env.render(map)
+    fig = plt.figure()
+    ax = fig.add_subplot(1, 1, 1)
+    ax.imshow(img)
+    if loc is not None:
+        # now make the attention visible
+        attention = patches.Rectangle(
+            ((loc-attn_size//2)*40, (size-1-loc[2,1]-attn_size//2)*40),
+            attn_size*40, attn_size*40, linewidth=2, edgecolor='y', facecolor='none')
+        ax.add_patch(attention)
+    plt.savefig(path)
+    plt.close()
+
 def save_example_images(test_batch, test_maps_prestep, test_maps_poststep, test_locs, path, env):
     """creates a display friendly visualization of results"""
     attn_size = 3
@@ -136,3 +152,21 @@ def save_example_images(test_batch, test_maps_prestep, test_maps_poststep, test_
         axarr[t, 2].set_yticks([])
     plt.subplots_adjust(hspace=0.05, wspace=0.05)
     plt.savefig(path, bbox_inches=0)
+    plt.close()
+
+
+class AsyncSlicer:
+    def __init__(self, img, loc, glimpse, size):
+        self.img = img  # shared memory object into which state will be copied
+        self.loc = loc  # shared memory object telling slice location
+        self.glimpse = glimpse  # shared memory object of output
+        self.size = size  # size of sliced window
+
+
+    def slice_async(self, startq, stopq):
+        while True:
+            i = startq.get()  # batch #
+            self.glimpse[i] = self.img[
+                              i, :, (self.loc[i,0]-self.size//2):(self.loc[i,0]+self.size//2+1),
+                              (self.loc[i,1]-self.size//2):(self.loc[i,1]+self.size//2+1)]
+            stopq.put(i)

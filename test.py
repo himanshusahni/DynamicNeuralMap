@@ -40,7 +40,7 @@ test_loader = DataLoader(dataset, batch_size=1,
 test_loader_iter = iter(test_loader)
 
 # gpu?
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 print("will run on {} device!".format(device))
 
 # initialize map
@@ -52,7 +52,8 @@ map.to(device)
 mse = nn.MSELoss()
 # saved models
 model_dir = '{}'.format(env_name)
-model_paths = [os.path.join(model_dir, name) for name in os.listdir(model_dir) if name.endswith('pth')]
+# model_paths = [os.path.join(model_dir, name) for name in os.listdir(model_dir) if name.endswith('pth')]
+model_paths = [os.path.join(model_dir, name) for name in ['tanh_map70000.pth']]
 
 attn_span = range(-(ATTN_SIZE//2), ATTN_SIZE//2+1)
 xy = np.flip(np.array(np.meshgrid(attn_span, attn_span)), axis=0).reshape(2, -1)
@@ -60,7 +61,8 @@ xy = np.flip(np.array(np.meshgrid(attn_span, attn_span)), axis=0).reshape(2, -1)
 start = time.time()
 for path in model_paths:
     # load the model
-    map.load(path, device)
+    map.load(path)
+    map.to(device)
     # draw a testing batch
     try:
         test_batch = next(test_loader_iter)
@@ -72,12 +74,13 @@ for path in model_paths:
     state_batch = state_batch.to(device)
     loc = np.random.rand(1, 2)  # glimpse location (x,y) in [0,1]
     loc = (loc*10)  # above in [0, 10]
-    loc = np.clip(loc, 2, 7).astype(np.int64)  # clip to avoid edges
+    # loc = np.clip(loc, 2, 7).astype(np.int64)  # clip to avoid edges
+    loc = np.array([[2,2],])
     attn = loc[range(1), :, np.newaxis] + xy  # get all indices in attention window size
     test_loss = 0
     map.reset(batchsize=1)
     input_glimpses = state_batch[0][0, :, attn[0, 0, :], attn[0, 1, :]].view(-1, ATTN_SIZE, ATTN_SIZE)
-    map.register_glimpse(input_glimpses.unsqueeze(dim=0), attn)
+    map.write(input_glimpses.unsqueeze(dim=0), loc)
     test_maps_prestep = []
     test_maps_poststep = []
     test_locs = [loc.copy()]
@@ -100,7 +103,7 @@ for path in model_paths:
         output_glimpses = reconstruction[0, :, attn[0, 0, :], attn[0, 1, :]].view(-1, ATTN_SIZE, ATTN_SIZE)
         loss = mse(output_glimpses, input_glimpses)
         test_loss += loss.item()
-        map.register_glimpse(input_glimpses.unsqueeze(dim=0), attn)
+        map.write(input_glimpses.unsqueeze(dim=0), loc)
     # save some generated images
     model_name = os.path.splitext(os.path.basename(path))[0]
     save_example_images(

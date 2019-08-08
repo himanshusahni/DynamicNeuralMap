@@ -30,21 +30,19 @@ class DynamicMap():
         # net.hidden = (torch.zeros(1, BATCH_SIZE, 64).to(device),
         #               torch.zeros(1, BATCH_SIZE, 64).to(device))
 
-    def register_glimpse(self, glimpse, attn):
+    def write(self, glimpse, loc):
         """
         stores an incoming glimpse into the memory map
         :param glimpse: a (batchsize, *attention_dims) input to be stored in memory
-        :param attm: (x,y) location of above glimpse in map coordinates
+        :param loc: (x,y) location of above glimpse in map coordinates (where to write)
         """
-        # what to write, w_s (batchsize, 8) w_d (batchsize, 8) and with what probability (batchsize, attn_size^2)
-        w, p = self.write_model(glimpse)
-        # p = torch.ones(glimpse.size(0), self.attn_size * self.attn_size)
-        # p = p.to(self.device)
-        w = w.repeat(1, self.attn_size*self.attn_size).view(-1, self.attn_size, self.attn_size, 16)
-        w *= p.view(-1, self.attn_size, self.attn_size, 1)
-        # write into map
-        for idx in range(attn.shape[0]):
-            self.map[idx, attn[idx, 0, :], attn[idx, 1, :]] = w[idx].view(-1, 16)
+        # what to write
+        w = self.write_model(glimpse)
+        # write
+        loc = np.transpose(np.array(loc))
+        self.map[range(loc.shape[1]), loc[0], loc[1], :] = w
+        # returns a cost of writing
+        return w.abs().mean()
 
     def step(self, action):
         """
@@ -60,7 +58,7 @@ class DynamicMap():
         """
         attempt to reconstruct the entire state image using current map
         """
-        return self.reconstruction_model(self.map).permute(0, 3, 1, 2)
+        return self.reconstruction_model(self.map.permute(0, 3, 1, 2))
 
     def parameters(self):
         return list(self.write_model.parameters()) +\
@@ -74,8 +72,8 @@ class DynamicMap():
             'reconstruct': self.reconstruction_model
         }, path)
 
-    def load(self, path, device):
+    def load(self, path):
         models = torch.load(path)
-        self.write_model = models['write'].to(device)
-        self.step_model = models['step'].to(device)
-        self.reconstruction_model = models['reconstruct'].to(device)
+        self.write_model = models['write']
+        self.step_model = models['step']
+        self.reconstruction_model = models['reconstruct']

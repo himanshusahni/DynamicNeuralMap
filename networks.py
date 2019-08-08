@@ -12,21 +12,16 @@ class MapReconstruction(nn.Module):
         # self.deconv = nn.ConvTranspose2d(in_channels, out_channels, 3, stride=1, padding=1)
         self.in_channels = in_channels
         self.out_channels = out_channels
-        self.fc1 = nn.Linear(in_channels, out_channels)
+        self.conv = nn.Conv2d(in_channels, out_channels, 3, stride=1, padding=1)
         self.print_info()
 
     def print_info(self):
         print("Initializing reconstruction network!")
         print(self)
-        print("Total fc params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
+        print("Total conv params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
 
     def forward(self, x):
-        size = x.size()
-        x = x.view(-1, self.in_channels)
-        # x = torch.softmax(self.fc1(x), dim=1)
-        x = torch.sigmoid(self.fc1(x))
-        x = x.view(size[0], size[1], size[2], self.out_channels)
-        return x
+        return torch.tanh(self.conv(x))
 
 
 class MapStep(nn.Module):
@@ -54,7 +49,6 @@ class MapWrite(nn.Module):
         self.attn_size = attn_size
         self.fc1 = nn.Linear(attn_size*attn_size*in_channels, 64)
         self.fc2 = nn.Linear(64, out_channels)
-        self.fcp = nn.Linear(64, self.attn_size*attn_size)
         self.print_info()
 
     def print_info(self):
@@ -68,8 +62,7 @@ class MapWrite(nn.Module):
         x = x.flatten(start_dim=1)
         x = F.leaky_relu(self.fc1(x), 0.2)
         w = F.leaky_relu(self.fc2(x), 0.2)
-        p = torch.sigmoid(self.fcp(x))
-        return w, p
+        return w
 
 
 class GlimpseNetwork(nn.Module):

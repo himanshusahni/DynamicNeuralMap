@@ -47,14 +47,14 @@ train_idx_sampler, test_idx_sampler = \
 
 train_loader = DataLoader(dataset, batch_size=BATCH_SIZE,
                           sampler=train_idx_sampler, num_workers=10, collate_fn=time_collate,
-                          drop_last=True)
+                          drop_last=True, pin_memory=True)
 test_loader = DataLoader(dataset, batch_size=1,
                          sampler=test_idx_sampler, num_workers=1, collate_fn=time_collate,
-                         drop_last=True)
+                         drop_last=True, pin_memory=True)
 test_loader_iter = iter(test_loader)
 
 # gpu?
-device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 print("will run on {} device!".format(device))
 
 # initialize map
@@ -65,6 +65,7 @@ map.to(device)
 # glimpse_net.to(device)
 # glimpse_agent = ReinforcePolicyContinuous(glimpse_net, device)
 mse = nn.MSELoss()
+bce = nn.BCELoss()
 optimizer = optim.Adam(map.parameters(), lr=1e-6)
 
 attn_span = range(-(ATTN_SIZE//2), ATTN_SIZE//2+1)
@@ -80,12 +81,11 @@ for epoch in range(40000):
     train_loader_iter = iter(train_loader)
     for batch in train_loader_iter:
         state_batch, action_batch = batch
-        # send to gpu
-        state_batch = state_batch.to(device)
         # pick starting locations of attention (random)
-        loc = np.random.rand(BATCH_SIZE, 2)  # glimpse location (x,y) in [0,1]
-        loc = (loc*10)  # above in [0, 10]
-        loc = np.clip(loc, 2, 7).astype(np.int64)  # clip to avoid edges
+        all_loc = np.random.rand(seq_len, BATCH_SIZE, 2)  # glimpse location (x,y) in [0,1]
+        all_loc = (all_loc*10)  # above in [0, 10]
+        all_loc = np.clip(all_loc, 2, 7).astype(np.int64)  # clip to avoid edges
+        loc = all_loc[0]
         attn = loc[range(BATCH_SIZE), :, np.newaxis] + xy  # get all indices in attention window size
         # attn_log_probs = []
         # attn_rewards = []
@@ -93,38 +93,45 @@ for epoch in range(40000):
         total_loss = 0
         # initialize map with initial input glimpses
         map.reset(BATCH_SIZE)
-        # g.render('full.jpeg', state_batch[0][2].permute(1,2,0), loc[2])
-        input_glimpses = [state_batch[0][idx, :, attn[idx, 0, :], attn[idx, 1, :]].view(-1, ATTN_SIZE, ATTN_SIZE)
-                          for idx in range(BATCH_SIZE)]
-        # g.render('glimpse.jpeg', input_glimpses[2].permute(1,2,0), None)
-        input_glimpses = torch.cat([g.unsqueeze(dim=0) for g in input_glimpses])
-        map.register_glimpse(input_glimpses, attn)
+        # gather initial glimpse from state
+        idxs_dim_0 = np.repeat(np.arange(BATCH_SIZE), ATTN_SIZE * ATTN_SIZE)
+        idxs_dim_2 = attn[:, 0, :].flatten()
+        idxs_dim_3 = attn[:, 1, :].flatten()
+        input_glimpses = state_batch[0][idxs_dim_0, :, idxs_dim_2, idxs_dim_3]
+        # now a little bit of magic to rearrange them in initial view
+        input_glimpses = input_glimpses.transpose(0, 1).view(-1, BATCH_SIZE, ATTN_SIZE, ATTN_SIZE).transpose(0, 1)
+        input_glimpses = input_glimpses.to(device)
+        write_loss = map.write(input_glimpses, loc)
         for t in range(1, seq_len):
             # step forward the internal map
             # map.step(action_batch[t-1])
             # now what does it look like
             reconstruction = map.reconstruct()
             # select next attention spot
-            loc = np.random.rand(BATCH_SIZE, 2)  # glimpse location (x,y) in [0,1]
-            loc = (loc*10)  # above in [0, 10]
-            loc = np.clip(loc, 2, 7).astype(np.int64)  # clip to avoid edges
+            # loc = np.random.rand(BATCH_SIZE, 2)  # glimpse location (x,y) in [0,1]
+            # loc = (loc*10)  # above in [0, 10]
+            # loc = np.clip(loc, 2, 7).astype(np.int64)  # clip to avoid edges
+            loc = all_loc[t]
             attn = loc[range(BATCH_SIZE), :, np.newaxis] + xy  # get all indices in attention window size
-            # now grab next glimpses
-            input_glimpses = [state_batch[t][idx, :, attn[idx, 0, :], attn[idx, 1, :]].view(-1, ATTN_SIZE, ATTN_SIZE)
-                              for idx in range(BATCH_SIZE)]
-            input_glimpses = torch.cat([g.unsqueeze(dim=0) for g in input_glimpses])
+            # # now grab next glimpses
+            idxs_dim_2 = attn[:, 0, :].flatten()
+            idxs_dim_3 = attn[:, 1, :].flatten()
+            # idxs_dim_0 remain the same
+            input_glimpses = state_batch[t][idxs_dim_0, :, idxs_dim_2, idxs_dim_3]
+            # now a little bit of magic to rearrange them in initial view
+            input_glimpses = input_glimpses.transpose(0, 1).view(-1, BATCH_SIZE, ATTN_SIZE, ATTN_SIZE).transpose(0, 1)
+            input_glimpses = input_glimpses.to(device)
             # compute reconstruction loss
-            output_glimpses = [reconstruction[idx, :, attn[idx, 0, :], attn[idx, 1, :]].view(-1, ATTN_SIZE, ATTN_SIZE)
-                               for idx in range(BATCH_SIZE)]
-            output_glimpses = torch.cat([g.unsqueeze(dim=0) for g in output_glimpses])
-            loss = mse(output_glimpses, input_glimpses)
+            output_glimpses = reconstruction[idxs_dim_0, :, idxs_dim_2, idxs_dim_3]
+            output_glimpses = output_glimpses.transpose(0, 1).view(-1, BATCH_SIZE, ATTN_SIZE, ATTN_SIZE).transpose(0, 1)
+            loss = mse(output_glimpses, input_glimpses) + write_loss
             # save the loss as a reward for glimpse agent
             # glimpse_agent.reward(loss.detach().cpu().numpy())
             # propogate backwards through entire graph
             loss.backward(retain_graph=True)
             total_loss += loss.item()
             # register the new glimpse
-            map.register_glimpse(input_glimpses, attn)
+            write_loss = map.write(input_glimpses, loc)
         optimizer.step()
         # policy_loss = glimpse_agent.update()
         training_metrics['loss'].update(total_loss)
@@ -142,8 +149,6 @@ for epoch in range(40000):
                 test_loader_iter = iter(test_loader)
                 test_batch = next(test_loader_iter)
             state_batch, action_batch = test_batch
-            # send to gpu
-            state_batch = state_batch.to(device)
             loc = np.random.rand(1, 2)  # glimpse location (x,y) in [0,1]
             loc = (loc*10)  # above in [0, 10]
             loc = np.clip(loc, 2, 7).astype(np.int64)  # clip to avoid edges
@@ -151,7 +156,8 @@ for epoch in range(40000):
             test_loss = 0
             map.reset(batchsize=1)
             input_glimpses = state_batch[0][0, :, attn[0, 0, :], attn[0, 1, :]].view(-1, ATTN_SIZE, ATTN_SIZE)
-            map.register_glimpse(input_glimpses.unsqueeze(dim=0), attn)
+            input_glimpses = input_glimpses.to(device)
+            map.write(input_glimpses.unsqueeze(dim=0), loc)
             test_maps_prestep = []
             test_maps_poststep = []
             test_locs = [loc.copy()]
@@ -170,11 +176,12 @@ for epoch in range(40000):
                 test_locs.append(loc.copy())
                 # now grab next glimpses
                 input_glimpses = state_batch[t][0, :, attn[0, 0, :], attn[0, 1, :]].view(-1, ATTN_SIZE, ATTN_SIZE)
+                input_glimpses = input_glimpses.to(device)
                 # compute reconstruction loss
                 output_glimpses = reconstruction[0, :, attn[0, 0, :], attn[0, 1, :]].view(-1, ATTN_SIZE, ATTN_SIZE)
                 loss = mse(output_glimpses, input_glimpses)
                 test_loss += loss.item()
-                map.register_glimpse(input_glimpses.unsqueeze(dim=0), attn)
+                map.write(input_glimpses.unsqueeze(dim=0), loc)
             to_print = 'epoch [{}] batch [{}]'.format(epoch, i_batch)
             for key, value in training_metrics.items():
                 if type(value) == AverageMeter:
@@ -185,7 +192,7 @@ for epoch in range(40000):
             start = time.time()
         if i_batch % 10000 == 0:
             print('saving network weights...')
-            map.save(os.path.join(env_name, 'sigmoid_map{}.pth'.format(i_batch)))
+            map.save(os.path.join(env_name, 'tanh_map{}.pth'.format(i_batch)))
         #     torch.save(glimpse_net, os.path.join(env, 'glimpse_net_cont_{}.pth'.format(i_batch)))
             # save some generated images
             save_example_images(
@@ -193,7 +200,7 @@ for epoch in range(40000):
                 torch.cat(test_maps_prestep, dim=0),
                 torch.cat(test_maps_poststep, dim=0),
                 np.concatenate(test_locs, axis=0),
-                os.path.join(env_name, 'sigmoid_predictions_map{}.jpeg'.format(i_batch)),
+                os.path.join(env_name, 'tanh_predictions{}.jpeg'.format(i_batch)),
                 env)
         if i_batch % 50000 == 0:
             if seq_len < END_SEQ_LEN:
