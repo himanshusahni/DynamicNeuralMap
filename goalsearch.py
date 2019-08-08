@@ -88,9 +88,8 @@ class GoalSearchEnv(object):
 
     def get_reward_done(self):
         # first check if we hit an enemy
-        if (self.agent_x == self.enemy_x) and (self.agent_y == self.enemy_y):
+        if self.map[self.agent_x, self.agent_y, 5]:
             return -1, True
-        #TODO: can do this by bitwise and of appropriate channels
         if (self.agent_x == self.left_goal_x) and (self.agent_y == self.left_goal_y):
             if self.goal == 0:
                 return 1, True
