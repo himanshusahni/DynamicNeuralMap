@@ -7,16 +7,18 @@ class GoalSearchEnv(object):
     def __init__(self, size):
         self.size = size
         self.attention_size = 5
-        self.map = np.zeros((self.size, self.size, 5))
+        self.map = np.zeros((self.size, self.size, 6))
         self.action_space = gym.spaces.Discrete(4)
-        self.observation_space = gym.spaces.Box(0, 1, (5, self.size, self.size), dtype=np.int32)
+        self.observation_space = gym.spaces.Box(0, 1, (6, self.size, self.size), dtype=np.int32)
 
     def reset(self):
         self.ep_step = 0
-        self.map = np.zeros((self.size, self.size, 5))
+        self.map = np.zeros((self.size, self.size, 6))
+        # place wall
         wall_x = np.random.randint(1, self.size - 1)
         wall_height = np.random.randint(1, self.size - 1)
         self.map[wall_x, 0:wall_height, 4] = 1  # wall on channel 4
+        # place agent
         self.agent_x = 0
         self.agent_y = self.size - 1
         self.map[self.agent_x, self.agent_y, 3] = 1  # agent on channel 3
@@ -31,6 +33,13 @@ class GoalSearchEnv(object):
         self.right_goal_x = np.random.randint(wall_x+1, self.size)
         self.right_goal_y = np.random.randint(wall_height)
         self.map[self.right_goal_x, self.right_goal_y, 2] = 1  # left and right goal on 2
+        # spawn enemy
+        self.enemy_x, self.enemy_y = np.random.randint(0, self.size, size=(2,))
+        # do not spawn on top of anything else!
+        if np.any(self.map[self.enemy_x, self.enemy_y]):
+            self.enemy_x, self.enemy_y = np.random.randint(0, self.size, size=(2,))
+        self.map[self.enemy_x, self.enemy_y, 5] = 1  # enemy on channel 5
+        self.enemy_vel = [np.random.choice([-1,1]), 0]
         return self.get_obs()
 
     def clip_attention(self, x, y):
@@ -40,9 +49,9 @@ class GoalSearchEnv(object):
 
     def get_obs(self):
         """return observation under current attention"""
-        return self.map[(self.attention_x - self.attention_size//2):(self.attention_x + 1 + self.attention_size//2),
-               (self.attention_y - self.attention_size//2):(self.attention_y + 1 + self.attention_size//2), :]
-        # return self.map
+        # return self.map[(self.attention_x - self.attention_size//2):(self.attention_x + 1 + self.attention_size//2),
+        #        (self.attention_y - self.attention_size//2):(self.attention_y + 1 + self.attention_size//2), :]
+        return self.map
 
     def render(self, map=None):
         if map is None:
@@ -68,14 +77,20 @@ class GoalSearchEnv(object):
         map_image[np.where(map[:, :, 0])[0], np.where(map[:, :, 0])[1], :] = [255, 0, 255]  # left goal is pink
         map_image[np.where(map[:, :, 1])[0], np.where(map[:, :, 1])[1], :] = [0, 0, 255]  # right goal is blue
         map_image[np.where(map[:, :, 2])[0], np.where(map[:, :, 2])[1], :] = [0, 255, 0]  # goal is green
-        # draw in the walls black
-        map_image[np.where(map[:, :, 4])[0], np.where(map[:, :, 4])[1], :] = [0, 0, 0]
+        # draw in the walls
+        map_image[np.where(map[:, :, 4])[0], np.where(map[:, :, 4])[1], :] = [0, 0, 0]  # walls are black
+        # draw in the enemy
+        map_image[np.where(map[:, :, 5])[0], np.where(map[:, :, 5])[1], :] = [255, 0, 0]  # enemy is red
         # multiply the map image onto itself
         map_image = np.repeat(map_image, 40, axis=0)
         map_image = np.repeat(map_image, 40, axis=1)
         return np.rot90(map_image.astype(np.uint8), k=1)
 
     def get_reward_done(self):
+        # first check if we hit an enemy
+        if (self.agent_x == self.enemy_x) and (self.agent_y == self.enemy_y):
+            return -1, True
+        #TODO: can do this by bitwise and of appropriate channels
         if (self.agent_x == self.left_goal_x) and (self.agent_y == self.left_goal_y):
             if self.goal == 0:
                 return 1, True
@@ -115,11 +130,25 @@ class GoalSearchEnv(object):
         self.map[self.agent_x, self.agent_y, 3] = 0
         self.map[new_x, new_y, 3] = 1
         self.agent_x, self.agent_y = new_x, new_y
-
+        # now move the enemy. change directions if hits the border
+        if self.enemy_x == self.size - 1:
+            self.enemy_vel[0] = -1
+        elif self.enemy_x == 0:
+            self.enemy_vel[0] = 1
+        new_enemy_x = self.enemy_x + self.enemy_vel[0]
+        new_enemy_y = self.enemy_y + self.enemy_vel[1]
+        # change directions if it hits another object
+        if np.any(self.map[new_enemy_x, new_enemy_y, [0,1,2,4]]):
+            self.enemy_vel[0] *= -1
+            new_enemy_x = self.enemy_x + self.enemy_vel[0]
+            new_enemy_y = self.enemy_y + self.enemy_vel[1]
+        self.map[self.enemy_x, self.enemy_y, 5] = 0
+        self.enemy_x = new_enemy_x
+        self.enemy_y = new_enemy_y
+        self.map[self.enemy_x, self.enemy_y, 5] = 1
         r, done = self.get_reward_done()
         # attention (for now) moves to a random location
         self.attention_x, self.attention_y = self.clip_attention(
             np.random.randint(self.size), np.random.randint(self.size))
         self.ep_step += 1
         return self.get_obs(), r, done, None
-#TODO: test the environment with a simple DQN agent with fully observable states, make sure it can learn!
