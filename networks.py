@@ -29,7 +29,7 @@ class MapStep(nn.Module):
 
     def __init__(self, channels):
         super(MapStep, self).__init__()
-        self.conv = nn.Conv2d(channels, channels, 3, stride=1, padding=1)  #TODO: how many filters is this actually?
+        self.conv = nn.Conv2d(channels, channels, 3, stride=1, padding=1)
         self.print_info()
 
     def print_info(self):
@@ -47,22 +47,17 @@ class MapWrite(nn.Module):
     def __init__(self, attn_size, in_channels, out_channels):
         super(MapWrite, self).__init__()
         self.attn_size = attn_size
-        self.fc1 = nn.Linear(attn_size*attn_size*in_channels, 64)
-        self.fc2 = nn.Linear(64, out_channels)
+        self.conv = nn.Conv2d(in_channels, out_channels, 3, stride=1, padding=1)
         self.print_info()
 
     def print_info(self):
         print("Initializing write network!")
         print(self)
-        fc_params = sum([sum([p.numel() for p in l.parameters()]) for l in [self.fc1, self.fc2]])
-        print("FC params: {}".format(fc_params))
-        print("Total trainable params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
+        print("Total conv params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
 
     def forward(self, x):
-        x = x.flatten(start_dim=1)
-        x = F.leaky_relu(self.fc1(x), 0.2)
-        w = F.leaky_relu(self.fc2(x), 0.2)
-        return w
+        x = F.leaky_relu(self.conv(x), 0.2)
+        return x
 
 
 class GlimpseNetwork(nn.Module):

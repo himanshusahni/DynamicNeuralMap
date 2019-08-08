@@ -101,7 +101,7 @@ for epoch in range(40000):
         # now a little bit of magic to rearrange them in initial view
         input_glimpses = input_glimpses.transpose(0, 1).view(-1, BATCH_SIZE, ATTN_SIZE, ATTN_SIZE).transpose(0, 1)
         input_glimpses = input_glimpses.to(device)
-        write_loss = map.write(input_glimpses, loc)
+        write_loss = map.write(input_glimpses, attn)
         for t in range(1, seq_len):
             # step forward the internal map
             # map.step(action_batch[t-1])
@@ -124,14 +124,14 @@ for epoch in range(40000):
             # compute reconstruction loss
             output_glimpses = reconstruction[idxs_dim_0, :, idxs_dim_2, idxs_dim_3]
             output_glimpses = output_glimpses.transpose(0, 1).view(-1, BATCH_SIZE, ATTN_SIZE, ATTN_SIZE).transpose(0, 1)
-            loss = mse(output_glimpses, input_glimpses) + write_loss
+            loss = mse(output_glimpses, input_glimpses) + 0.01 * write_loss
             # save the loss as a reward for glimpse agent
             # glimpse_agent.reward(loss.detach().cpu().numpy())
             # propogate backwards through entire graph
             loss.backward(retain_graph=True)
             total_loss += loss.item()
             # register the new glimpse
-            write_loss = map.write(input_glimpses, loc)
+            write_loss = map.write(input_glimpses, attn)
         optimizer.step()
         # policy_loss = glimpse_agent.update()
         training_metrics['loss'].update(total_loss)
@@ -157,7 +157,7 @@ for epoch in range(40000):
             map.reset(batchsize=1)
             input_glimpses = state_batch[0][0, :, attn[0, 0, :], attn[0, 1, :]].view(-1, ATTN_SIZE, ATTN_SIZE)
             input_glimpses = input_glimpses.to(device)
-            map.write(input_glimpses.unsqueeze(dim=0), loc)
+            map.write(input_glimpses.unsqueeze(dim=0), attn)
             test_maps_prestep = []
             test_maps_poststep = []
             test_locs = [loc.copy()]
@@ -181,7 +181,7 @@ for epoch in range(40000):
                 output_glimpses = reconstruction[0, :, attn[0, 0, :], attn[0, 1, :]].view(-1, ATTN_SIZE, ATTN_SIZE)
                 loss = mse(output_glimpses, input_glimpses)
                 test_loss += loss.item()
-                map.write(input_glimpses.unsqueeze(dim=0), loc)
+                map.write(input_glimpses.unsqueeze(dim=0), attn)
             to_print = 'epoch [{}] batch [{}]'.format(epoch, i_batch)
             for key, value in training_metrics.items():
                 if type(value) == AverageMeter:
@@ -192,7 +192,7 @@ for epoch in range(40000):
             start = time.time()
         if i_batch % 10000 == 0:
             print('saving network weights...')
-            map.save(os.path.join(env_name, 'tanh_map{}.pth'.format(i_batch)))
+            map.save(os.path.join(env_name, 'conv_map{}.pth'.format(i_batch)))
         #     torch.save(glimpse_net, os.path.join(env, 'glimpse_net_cont_{}.pth'.format(i_batch)))
             # save some generated images
             save_example_images(
@@ -200,9 +200,9 @@ for epoch in range(40000):
                 torch.cat(test_maps_prestep, dim=0),
                 torch.cat(test_maps_poststep, dim=0),
                 np.concatenate(test_locs, axis=0),
-                os.path.join(env_name, 'tanh_predictions{}.jpeg'.format(i_batch)),
+                os.path.join(env_name, 'conv_predictions{}.jpeg'.format(i_batch)),
                 env)
-        if i_batch % 50000 == 0:
+        if i_batch % 20000 == 0:
             if seq_len < END_SEQ_LEN:
                 seq_len += 1
                 dataset.set_seqlen(seq_len)

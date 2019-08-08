@@ -30,17 +30,23 @@ class DynamicMap():
         # net.hidden = (torch.zeros(1, BATCH_SIZE, 64).to(device),
         #               torch.zeros(1, BATCH_SIZE, 64).to(device))
 
-    def write(self, glimpse, loc):
+    def write(self, glimpse, attn):
         """
         stores an incoming glimpse into the memory map
         :param glimpse: a (batchsize, *attention_dims) input to be stored in memory
-        :param loc: (x,y) location of above glimpse in map coordinates (where to write)
+        :param attn: indices of above glimpse in map coordinates (where to write)
         """
         # what to write
         w = self.write_model(glimpse)
         # write
-        loc = np.transpose(np.array(loc))
-        self.map[range(loc.shape[1]), loc[0], loc[1], :] = w
+        batchsize = glimpse.size(0)
+        attn_size = glimpse.size(2)
+        idxs_dim_0 = np.repeat(np.arange(batchsize), attn_size*attn_size)
+        idxs_dim_2 = attn[:, 0, :].flatten()
+        idxs_dim_3 = attn[:, 1, :].flatten()
+        # more indices magic
+        w = w.transpose(0, 1).flatten(start_dim=1).transpose(0, 1)
+        self.map[idxs_dim_0, idxs_dim_2, idxs_dim_3, :] = w
         # returns a cost of writing
         return w.abs().mean()
 
