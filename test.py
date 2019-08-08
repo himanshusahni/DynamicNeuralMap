@@ -18,8 +18,7 @@ from goalsearch import GoalSearchEnv
 env = GoalSearchEnv(size=10)
 
 # args:
-SEED = 123
-SEQ_LEN = 15
+SEED = 354
 ATTN_SIZE = 3
 
 np.random.seed(SEED)
@@ -30,7 +29,7 @@ torch.manual_seed(SEED)
 demo_dir = 'data-{}/'.format(env_name)
 print('using training data from {}'.format(demo_dir))
 dataset = CurriculumDataset(demo_dir=demo_dir, preload=False)
-seq_len = SEQ_LEN
+seq_len = 64
 dataset.set_seqlen(seq_len)
 test_idxs = list(range(len(dataset)))
 test_idx_sampler = SubsetRandomSampler(test_idxs)
@@ -52,8 +51,8 @@ map.to(device)
 mse = nn.MSELoss()
 # saved models
 model_dir = '{}'.format(env_name)
-# model_paths = [os.path.join(model_dir, name) for name in os.listdir(model_dir) if name.endswith('pth')]
-model_paths = [os.path.join(model_dir, name) for name in ['tanh_map70000.pth']]
+model_paths = [os.path.join(model_dir, name) for name in os.listdir(model_dir) if name.endswith('pth') and 'tanh' in name]
+# model_paths = [os.path.join(model_dir, name) for name in ['tanh_map70000.pth']]
 
 attn_span = range(-(ATTN_SIZE//2), ATTN_SIZE//2+1)
 xy = np.flip(np.array(np.meshgrid(attn_span, attn_span)), axis=0).reshape(2, -1)
@@ -72,10 +71,11 @@ for path in model_paths:
     state_batch, action_batch = test_batch
     # send to gpu
     state_batch = state_batch.to(device)
-    loc = np.random.rand(1, 2)  # glimpse location (x,y) in [0,1]
-    loc = (loc*10)  # above in [0, 10]
-    # loc = np.clip(loc, 2, 7).astype(np.int64)  # clip to avoid edges
-    loc = np.array([[2,2],])
+    #loc = np.random.rand(1, 2)  # glimpse location (x,y) in [0,1]
+    #loc = (loc*10)  # above in [0, 10]
+    #loc = np.clip(loc, 2, 7).astype(np.int64)  # clip to avoid edges
+    step = 0
+    loc = np.array([[1+(step%8),1+(step//8)],])
     attn = loc[range(1), :, np.newaxis] + xy  # get all indices in attention window size
     test_loss = 0
     map.reset(batchsize=1)
@@ -92,9 +92,11 @@ for path in model_paths:
         reconstruction = map.reconstruct()
         test_maps_poststep.append(reconstruction.detach().cpu())
         # select next attention spot
-        loc = np.random.rand(1, 2)  # glimpse location (x,y) in [0,1]
-        loc = (loc*10)  # above in [0, 10]
-        loc = np.clip(loc, 2, 7).astype(np.int64)  # clip to avoid edges
+        #loc = np.random.rand(1, 2)  # glimpse location (x,y) in [0,1]
+        #loc = (loc*10)  # above in [0, 10]
+        #loc = np.clip(loc, 2, 7).astype(np.int64)  # clip to avoid edges
+        step += 1
+        loc = np.array([[1+(step%8),1+(step//8)],])
         attn = loc[range(1), :, np.newaxis] + xy  # get all indices in attention window size
         test_locs.append(loc.copy())
         # now grab next glimpses
