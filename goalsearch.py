@@ -17,11 +17,11 @@ class GoalSearchEnv(object):
         # place wall
         wall_x = np.random.randint(1, self.size - 1)
         wall_height = np.random.randint(1, self.size - 1)
-        self.map[wall_x, 0:wall_height, 4] = 1  # wall on channel 4
+        self.map[wall_x, 0:wall_height, 3] = 1  # wall on channel 3
         # place agent
         self.agent_x = 0
         self.agent_y = self.size - 1
-        self.map[self.agent_x, self.agent_y, 3] = 1  # agent on channel 3
+        self.map[self.agent_x, self.agent_y, 4] = 1  # agent on channel 4
         self.attention_x, self.attention_y = self.clip_attention(self.agent_x, self.agent_y)
         # pick goal type
         self.goal = np.random.randint(2)
@@ -71,14 +71,14 @@ class GoalSearchEnv(object):
         map = map_onehot
         # now create an image out of it
         map_image = 255 * np.ones((size, size, 3))
-        # first find where the agent is
-        map_image[np.where(map[:, :, 3])[0], np.where(map[:, :, 3])[1], :] = [255, 255, 0]  # agent is yellow
-        # now draw in the goals
+        # first draw in the goals
         map_image[np.where(map[:, :, 0])[0], np.where(map[:, :, 0])[1], :] = [255, 0, 255]  # left goal is pink
         map_image[np.where(map[:, :, 1])[0], np.where(map[:, :, 1])[1], :] = [0, 0, 255]  # right goal is blue
         map_image[np.where(map[:, :, 2])[0], np.where(map[:, :, 2])[1], :] = [0, 255, 0]  # goal is green
-        # draw in the walls
-        map_image[np.where(map[:, :, 4])[0], np.where(map[:, :, 4])[1], :] = [0, 0, 0]  # walls are black
+        # then draw in the walls
+        map_image[np.where(map[:, :, 3])[0], np.where(map[:, :, 3])[1], :] = [0, 0, 0]  # walls are black
+        # then find where the agent is
+        map_image[np.where(map[:, :, 4])[0], np.where(map[:, :, 4])[1], :] = [255, 255, 0]  # agent is yellow
         # draw in the enemy
         map_image[np.where(map[:, :, 5])[0], np.where(map[:, :, 5])[1], :] = [255, 0, 0]  # enemy is red
         # multiply the map image onto itself
@@ -124,12 +124,12 @@ class GoalSearchEnv(object):
         else:
             raise ValueError("action not recognized")
         # check if wall is in place
-        if self.map[new_x, new_y, 4]:
+        if self.map[new_x, new_y, 3]:
             new_x, new_y = self.agent_x, self.agent_y
         # move agent to new location!
-        self.map[self.agent_x, self.agent_y, 3] = 0
-        self.map[new_x, new_y, 3] = 1
+        self.map[self.agent_x, self.agent_y, 4] = 0
         self.agent_x, self.agent_y = new_x, new_y
+        self.map[self.agent_x, self.agent_y, 4] = 1
         # now move the enemy. change directions if hits the border
         if self.enemy_x == self.size - 1:
             self.enemy_vel[0] = -1
@@ -138,7 +138,7 @@ class GoalSearchEnv(object):
         new_enemy_x = self.enemy_x + self.enemy_vel[0]
         new_enemy_y = self.enemy_y + self.enemy_vel[1]
         # change directions if it hits another object
-        if np.any(self.map[new_enemy_x, new_enemy_y, [0,1,2,4]]):
+        if np.any(self.map[new_enemy_x, new_enemy_y, 0:4]):
             self.enemy_vel[0] *= -1
             new_enemy_x = self.enemy_x + self.enemy_vel[0]
             new_enemy_y = self.enemy_y + self.enemy_vel[1]
