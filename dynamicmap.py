@@ -7,12 +7,12 @@ from networks import *
 
 
 class DynamicMap():
-    def __init__(self, size, attn_size, device):
+    def __init__(self, size, channels, attn_size, device):
         self.size = size
         self.attn_size = attn_size
-        self.write_model = MapWrite(attn_size, in_channels=5, out_channels=16)
+        self.write_model = MapWrite(attn_size, in_channels=channels, out_channels=16)
         self.step_model = MapStep(channels=8)
-        self.reconstruction_model = MapReconstruction(in_channels=16, out_channels=5)
+        self.reconstruction_model = MapReconstruction(in_channels=16, out_channels=channels)
         self.device = device
 
     def to(self, device):
