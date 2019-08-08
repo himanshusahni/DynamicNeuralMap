@@ -13,7 +13,7 @@ import numpy as np
 np.set_printoptions(precision=3)
 
 # env = 'Breakout-v4'
-env_name = 'Goalsearch-v0'
+env_name = 'Goalsearch-v1'
 from goalsearch import GoalSearchEnv
 env = GoalSearchEnv(size=10)
 
@@ -23,6 +23,8 @@ SEED = 123
 START_SEQ_LEN = 5
 END_SEQ_LEN = 15
 ATTN_SIZE = 3
+ENV_SIZE = env.observation_space.shape[1]
+CHANNELS = env.observation_space.shape[0]
 
 np.random.seed(SEED)
 torch.manual_seed(SEED)
@@ -46,7 +48,7 @@ train_idx_sampler, test_idx_sampler = \
     SubsetRandomSampler(train_idxs), SubsetRandomSampler(test_idxs)
 
 train_loader = DataLoader(dataset, batch_size=BATCH_SIZE,
-                          sampler=train_idx_sampler, num_workers=10, collate_fn=time_collate,
+                          sampler=train_idx_sampler, num_workers=8, collate_fn=time_collate,
                           drop_last=True, pin_memory=True)
 test_loader = DataLoader(dataset, batch_size=1,
                          sampler=test_idx_sampler, num_workers=1, collate_fn=time_collate,
@@ -58,7 +60,7 @@ device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 print("will run on {} device!".format(device))
 
 # initialize map
-map = DynamicMap(size=10, attn_size=ATTN_SIZE, device=device)
+map = DynamicMap(size=ENV_SIZE, channels=CHANNELS, attn_size=ATTN_SIZE, device=device)
 map.to(device)
 # map.load('{}/map360000.pth'.format(env_name), device)
 # glimpse_net = GlimpseNetwork(nb_actions=2)
@@ -105,8 +107,6 @@ for epoch in range(40000):
         for t in range(1, seq_len):
             # step forward the internal map
             # map.step(action_batch[t-1])
-            # now what does it look like
-            reconstruction = map.reconstruct()
             # select next attention spot
             # loc = np.random.rand(BATCH_SIZE, 2)  # glimpse location (x,y) in [0,1]
             # loc = (loc*10)  # above in [0, 10]
@@ -118,18 +118,18 @@ for epoch in range(40000):
             idxs_dim_3 = attn[:, 1, :].flatten()
             # idxs_dim_0 remain the same
             input_glimpses = state_batch[t][idxs_dim_0, :, idxs_dim_2, idxs_dim_3]
-            # now a little bit of magic to rearrange them in initial view
-            input_glimpses = input_glimpses.transpose(0, 1).view(-1, BATCH_SIZE, ATTN_SIZE, ATTN_SIZE).transpose(0, 1)
             input_glimpses = input_glimpses.to(device)
             # compute reconstruction loss
+            reconstruction = map.reconstruct()
             output_glimpses = reconstruction[idxs_dim_0, :, idxs_dim_2, idxs_dim_3]
-            output_glimpses = output_glimpses.transpose(0, 1).view(-1, BATCH_SIZE, ATTN_SIZE, ATTN_SIZE).transpose(0, 1)
             loss = mse(output_glimpses, input_glimpses) + 0.01 * write_loss
             # save the loss as a reward for glimpse agent
             # glimpse_agent.reward(loss.detach().cpu().numpy())
             # propogate backwards through entire graph
             loss.backward(retain_graph=True)
             total_loss += loss.item()
+            # a little bit of magic to rearrange them in initial view
+            input_glimpses = input_glimpses.transpose(0, 1).view(-1, BATCH_SIZE, ATTN_SIZE, ATTN_SIZE).transpose(0, 1)
             # register the new glimpse
             write_loss = map.write(input_glimpses, attn)
         optimizer.step()
@@ -166,8 +166,6 @@ for epoch in range(40000):
                 test_maps_prestep.append(map.reconstruct().detach().cpu())
                 # step forward the internal map
                 # map.step(action_batch[t-1])
-                # now what does it look like
-                reconstruction = map.reconstruct()
                 test_maps_poststep.append(reconstruction.detach().cpu())
                 # select next attention spot
                 loc = all_loc[t]
@@ -177,6 +175,7 @@ for epoch in range(40000):
                 input_glimpses = state_batch[t][0, :, attn[0, 0, :], attn[0, 1, :]].view(-1, ATTN_SIZE, ATTN_SIZE)
                 input_glimpses = input_glimpses.to(device)
                 # compute reconstruction loss
+                reconstruction = map.reconstruct()
                 output_glimpses = reconstruction[0, :, attn[0, 0, :], attn[0, 1, :]].view(-1, ATTN_SIZE, ATTN_SIZE)
                 loss = mse(output_glimpses, input_glimpses)
                 test_loss += loss.item()
