@@ -84,7 +84,7 @@ for epoch in range(40000):
         # pick starting locations of attention (random)
         all_loc = np.random.rand(seq_len, BATCH_SIZE, 2)  # glimpse location (x,y) in [0,1]
         all_loc = (all_loc*10)  # above in [0, 10]
-        all_loc = np.clip(all_loc, 2, 7).astype(np.int64)  # clip to avoid edges
+        all_loc = np.clip(all_loc, 1, 8).astype(np.int64)  # clip to avoid edges
         loc = all_loc[0]
         attn = loc[range(BATCH_SIZE), :, np.newaxis] + xy  # get all indices in attention window size
         # attn_log_probs = []
@@ -108,9 +108,6 @@ for epoch in range(40000):
             # now what does it look like
             reconstruction = map.reconstruct()
             # select next attention spot
-            # loc = np.random.rand(BATCH_SIZE, 2)  # glimpse location (x,y) in [0,1]
-            # loc = (loc*10)  # above in [0, 10]
-            # loc = np.clip(loc, 2, 7).astype(np.int64)  # clip to avoid edges
             loc = all_loc[t]
             attn = loc[range(BATCH_SIZE), :, np.newaxis] + xy  # get all indices in attention window size
             # # now grab next glimpses
@@ -124,7 +121,7 @@ for epoch in range(40000):
             # compute reconstruction loss
             output_glimpses = reconstruction[idxs_dim_0, :, idxs_dim_2, idxs_dim_3]
             output_glimpses = output_glimpses.transpose(0, 1).view(-1, BATCH_SIZE, ATTN_SIZE, ATTN_SIZE).transpose(0, 1)
-            loss = mse(output_glimpses, input_glimpses) + write_loss
+            loss = mse(output_glimpses, input_glimpses) + 0.01 * write_loss
             # save the loss as a reward for glimpse agent
             # glimpse_agent.reward(loss.detach().cpu().numpy())
             # propogate backwards through entire graph
@@ -149,9 +146,10 @@ for epoch in range(40000):
                 test_loader_iter = iter(test_loader)
                 test_batch = next(test_loader_iter)
             state_batch, action_batch = test_batch
-            loc = np.random.rand(1, 2)  # glimpse location (x,y) in [0,1]
-            loc = (loc*10)  # above in [0, 10]
-            loc = np.clip(loc, 2, 7).astype(np.int64)  # clip to avoid edges
+            all_loc = np.random.rand(seq_len, 1, 2)  # glimpse location (x,y) in [0,1]
+            all_loc = (all_loc*10)  # above in [0, 10]
+            all_loc = np.clip(all_loc, 1, 8).astype(np.int64)  # clip to avoid edges
+            loc = all_loc[0]
             attn = loc[range(1), :, np.newaxis] + xy  # get all indices in attention window size
             test_loss = 0
             map.reset(batchsize=1)
@@ -169,9 +167,7 @@ for epoch in range(40000):
                 reconstruction = map.reconstruct()
                 test_maps_poststep.append(reconstruction.detach().cpu())
                 # select next attention spot
-                loc = np.random.rand(1, 2)  # glimpse location (x,y) in [0,1]
-                loc = (loc*10)  # above in [0, 10]
-                loc = np.clip(loc, 2, 7).astype(np.int64)  # clip to avoid edges
+                loc = all_loc[t]
                 attn = loc[range(1), :, np.newaxis] + xy  # get all indices in attention window size
                 test_locs.append(loc.copy())
                 # now grab next glimpses
@@ -195,14 +191,14 @@ for epoch in range(40000):
             map.save(os.path.join(env_name, 'tanh_map{}.pth'.format(i_batch)))
         #     torch.save(glimpse_net, os.path.join(env, 'glimpse_net_cont_{}.pth'.format(i_batch)))
             # save some generated images
-            save_example_images(
-                state_batch.cpu(),
-                torch.cat(test_maps_prestep, dim=0),
-                torch.cat(test_maps_poststep, dim=0),
-                np.concatenate(test_locs, axis=0),
-                os.path.join(env_name, 'tanh_predictions{}.jpeg'.format(i_batch)),
-                env)
-        if i_batch % 50000 == 0:
+            # save_example_images(
+            #     state_batch.cpu(),
+            #     torch.cat(test_maps_prestep, dim=0),
+            #     torch.cat(test_maps_poststep, dim=0),
+            #     np.concatenate(test_locs, axis=0),
+            #     os.path.join(env_name, 'tanh_predictions{}.jpeg'.format(i_batch)),
+            #     env)
+        if i_batch % 20000 == 0:
             if seq_len < END_SEQ_LEN:
                 seq_len += 1
                 dataset.set_seqlen(seq_len)
