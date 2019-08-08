@@ -29,7 +29,7 @@ class MapStep(nn.Module):
 
     def __init__(self, channels):
         super(MapStep, self).__init__()
-        self.conv = nn.Conv2d(channels, channels, 3, stride=1, padding=1)  #TODO: how many filters is this actually?
+        self.conv = nn.Conv2d(channels, channels, 3, stride=1, padding=1)
         self.print_info()
 
     def print_info(self):
@@ -38,7 +38,7 @@ class MapStep(nn.Module):
         print("Total conv params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
 
     def forward(self, x):
-        return torch.sigmoid(self.conv(x))
+        return torch.tanh(self.conv(x))
 
 
 class MapWrite(nn.Module):
