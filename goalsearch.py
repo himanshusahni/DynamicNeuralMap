@@ -141,6 +141,9 @@ class GoalSearchEnv(object):
             self.enemy_vel[0] *= -1
             new_enemy_x = self.enemy_x + self.enemy_vel[0]
             new_enemy_y = self.enemy_y + self.enemy_vel[1]
+            # but now check one last time again if this led the agent into a wall!
+            if new_enemy_x > (self.size - 1) or new_enemy_x < 0:
+                new_enemy_x = self.enemy_x
         self.map[self.enemy_x, self.enemy_y, 5] = 0
         self.enemy_x = new_enemy_x
         self.enemy_y = new_enemy_y
