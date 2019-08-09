@@ -13,13 +13,15 @@ import os
 np.set_printoptions(precision=3)
 
 # env = 'Breakout-v4'
-env_name = 'Goalsearch-v0'
+env_name = 'Goalsearch-v1'
 from goalsearch import GoalSearchEnv
 env = GoalSearchEnv(size=10)
 
 # args:
 SEED = 354
 ATTN_SIZE = 3
+ENV_SIZE = env.observation_space.shape[1]
+CHANNELS = env.observation_space.shape[0]
 
 np.random.seed(SEED)
 torch.manual_seed(SEED)
@@ -43,7 +45,7 @@ device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 print("will run on {} device!".format(device))
 
 # initialize map
-map = DynamicMap(size=10, attn_size=ATTN_SIZE, device=device)
+map = DynamicMap(size=ENV_SIZE, channels=CHANNELS, attn_size=ATTN_SIZE, device=device)
 map.to(device)
 # glimpse_net = GlimpseNetwork(nb_actions=2)
 # glimpse_net.to(device)
@@ -51,7 +53,7 @@ map.to(device)
 mse = nn.MSELoss()
 # saved models
 model_dir = '{}'.format(env_name)
-model_paths = [os.path.join(model_dir, name) for name in os.listdir(model_dir) if name.endswith('pth') and 'conv' in name]
+model_paths = [os.path.join(model_dir, name) for name in os.listdir(model_dir) if name.endswith('pth') and 'conv' in name and 'step' not in name]
 # model_paths = [os.path.join(model_dir, name) for name in ['tanh_map70000.pth']]
 
 attn_span = range(-(ATTN_SIZE//2), ATTN_SIZE//2+1)
