@@ -56,7 +56,7 @@ test_loader = DataLoader(dataset, batch_size=1,
 test_loader_iter = iter(test_loader)
 
 # gpu?
-device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 print("will run on {} device!".format(device))
 
 # initialize map
@@ -100,11 +100,16 @@ for epoch in range(40000):
         idxs_dim_2 = attn[:, 0, :].flatten()
         idxs_dim_3 = attn[:, 1, :].flatten()
         input_glimpses = state_batch[0][idxs_dim_0, :, idxs_dim_2, idxs_dim_3]
-        # now a little bit of magic to rearrange them in initial view
-        input_glimpses = input_glimpses.transpose(0, 1).view(-1, BATCH_SIZE, ATTN_SIZE, ATTN_SIZE).transpose(0, 1)
         input_glimpses = input_glimpses.to(device)
-        write_loss = map.write(input_glimpses, attn)
         for t in range(1, seq_len):
+            # now a little bit of magic to rearrange them in initial view
+            input_glimpses = input_glimpses.transpose(0, 1).view(-1, BATCH_SIZE, ATTN_SIZE, ATTN_SIZE).transpose(0, 1)
+            write_loss = map.write(input_glimpses, attn)
+            # post-write reconstruction loss
+            reconstruction = map.reconstruct()
+            output_glimpses = reconstruction[idxs_dim_0, :, idxs_dim_2, idxs_dim_3]
+            output_glimpses = output_glimpses.transpose(0, 1).view(-1, BATCH_SIZE, ATTN_SIZE, ATTN_SIZE).transpose(0, 1)
+            loss = mse(output_glimpses, input_glimpses) + 0.01 * write_loss
             # step forward the internal map
             map.step(action_batch[t-1])
             # select next attention spot
@@ -113,25 +118,21 @@ for epoch in range(40000):
             # loc = np.clip(loc, 2, 7).astype(np.int64)  # clip to avoid edges
             loc = all_loc[t]
             attn = loc[range(BATCH_SIZE), :, np.newaxis] + xy  # get all indices in attention window size
-            # # now grab next glimpses
+            # now grab next input glimpses
             idxs_dim_2 = attn[:, 0, :].flatten()
             idxs_dim_3 = attn[:, 1, :].flatten()
             # idxs_dim_0 remain the same
             input_glimpses = state_batch[t][idxs_dim_0, :, idxs_dim_2, idxs_dim_3]
             input_glimpses = input_glimpses.to(device)
-            # compute reconstruction loss
+            # compute post-step reconstruction loss
             reconstruction = map.reconstruct()
             output_glimpses = reconstruction[idxs_dim_0, :, idxs_dim_2, idxs_dim_3]
-            loss = mse(output_glimpses, input_glimpses) + 0.01 * write_loss
+            loss += mse(output_glimpses, input_glimpses)
             # save the loss as a reward for glimpse agent
             # glimpse_agent.reward(loss.detach().cpu().numpy())
             # propogate backwards through entire graph
             loss.backward(retain_graph=True)
             total_loss += loss.item()
-            # a little bit of magic to rearrange them in initial view
-            input_glimpses = input_glimpses.transpose(0, 1).view(-1, BATCH_SIZE, ATTN_SIZE, ATTN_SIZE).transpose(0, 1)
-            # register the new glimpse
-            write_loss = map.write(input_glimpses, attn)
         optimizer.step()
         # policy_loss = glimpse_agent.update()
         training_metrics['loss'].update(total_loss)
