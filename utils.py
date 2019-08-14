@@ -127,6 +127,7 @@ def save_one_img(map, path, env, loc=None, size=None, attn_size=None):
     plt.savefig(path)
     plt.close()
 
+
 def save_example_images(test_batch, test_maps_prestep, test_maps_poststep, test_locs, path, env):
     """creates a display friendly visualization of results"""
     attn_size = 3
@@ -139,7 +140,7 @@ def save_example_images(test_batch, test_maps_prestep, test_maps_poststep, test_
         axarr[t, 0].set_yticks([])
         # now make the attention visible
         attention = patches.Rectangle(
-            ((test_locs[t,0]-attn_size//2)*40, (size-1-test_locs[t,1]-attn_size//2)*40),
+            ((test_locs[t][0]-attn_size//2)*40, (size-1-test_locs[t][1]-attn_size//2)*40),
             attn_size*40, attn_size*40, linewidth=2, edgecolor='y', facecolor='none')
         axarr[t, 0].add_patch(attention)
         display_prestep = env.render(test_maps_prestep[t].permute(1, 2, 0).numpy())

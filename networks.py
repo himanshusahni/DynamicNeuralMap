@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import numpy as np
+
 
 class MapReconstruction(nn.Module):
     """reconstruct entire state from map"""
@@ -12,7 +14,7 @@ class MapReconstruction(nn.Module):
         # self.deconv = nn.ConvTranspose2d(in_channels, out_channels, 3, stride=1, padding=1)
         self.in_channels = in_channels
         self.out_channels = out_channels
-        self.conv = nn.Conv2d(in_channels, out_channels, 3, stride=1, padding=1)
+        self.conv = nn.Conv2d(in_channels, out_channels, 1, stride=1, padding=0)
         self.print_info()
 
     def print_info(self):
@@ -46,7 +48,6 @@ class MapWrite(nn.Module):
 
     def __init__(self, attn_size, in_channels, out_channels):
         super(MapWrite, self).__init__()
-        self.attn_size = attn_size
         self.conv = nn.Conv2d(in_channels, out_channels, 3, stride=1, padding=1)
         self.print_info()
 
@@ -56,8 +57,7 @@ class MapWrite(nn.Module):
         print("Total conv params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
 
     def forward(self, x):
-        x = F.leaky_relu(self.conv(x), 0.2)
-        return x
+        return F.leaky_relu(self.conv(x), 0.2)
 
 
 class GlimpseNetwork(nn.Module):
