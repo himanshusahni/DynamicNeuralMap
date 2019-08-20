@@ -48,14 +48,19 @@ print("will run on {} device!".format(device))
 # initialize map
 map = DynamicMap(size=ENV_SIZE, channels=CHANNELS, attn_size=ATTN_SIZE, device=device)
 map.to(device)
-# glimpse_net = GlimpseNetwork(nb_actions=2)
-# glimpse_net.to(device)
-# glimpse_agent = ReinforcePolicyContinuous(glimpse_net, device)
-mse = nn.MSELoss()
+glimpse_net = GlimpseNetwork(input_size=ENV_SIZE, channels=16, nb_actions=2)
+glimpse_net.to(device)
+glimpse_agent = ReinforcePolicyContinuous(
+    input_size=ENV_SIZE,
+    attn_size=ATTN_SIZE,
+    policy=glimpse_net,
+    device=device)
+mse = MinImposedMSEMasked()
+mse_unmasked = MinImposedMSE()
 # saved models
 model_dir = '{}'.format(env_name)
-model_paths = [os.path.join(model_dir, name) for name in os.listdir(model_dir) if name.endswith('pth') and 'pointread' in name]
-#model_paths = [os.path.join(model_dir, name) for name in ['conv_reconstructedwrite_map520000.pth',]]
+#model_paths = [os.path.join(model_dir, name) for name in os.listdir(model_dir) if name.endswith('pth') and 'pointread' in name]
+model_paths = [os.path.join(model_dir, name) for name in ['conv_controlledattention_reconstructedwrite_map60000.pth',]]
 
 attn_span = range(-(ATTN_SIZE//2), ATTN_SIZE//2+1)
 xy = np.flip(np.array(np.meshgrid(attn_span, attn_span)), axis=0).reshape(2, -1)
@@ -64,6 +69,8 @@ start = time.time()
 for path in model_paths:
     # load the model
     map.load(path)
+    # load the glimpse agent
+    glimpse_agent.policy = torch.load(path.replace("map", "glimpsenet")).to(device)
     map.to(device)
     # draw a testing batch
     try:
@@ -76,63 +83,68 @@ for path in model_paths:
     state_batch = state_batch.to(device)
     # locs = np.array(np.meshgrid(range(1,9,1), range(1,9,1))).transpose().reshape(-1,2)
     # loc = np.array([locs[0],]*BATCH_SIZE)
-    all_loc = np.random.rand(seq_len, BATCH_SIZE, 2)  # glimpse location (x,y) in [0,1]
-    all_loc = (all_loc*10)  # above in [0, 10]
-    all_loc = np.clip(all_loc, 1, 8).astype(np.int64)  # clip to avoid edges
-    loc = all_loc[0]
-    test_locs = [loc[0].copy()]
+    loc = np.random.rand(BATCH_SIZE, 2)  # glimpse location (x,y) in [0,1]
+    loc = (loc * ENV_SIZE)  # above in [0, 10]
+    loc = np.clip(loc, 1, 8).astype(np.int64)  # clip to avoid edges
     attn = loc[range(BATCH_SIZE), :, np.newaxis] + xy  # get all indices in attention window size
+    # get started training!
+    attn_log_probs = []
+    attn_rewards = []
     map.reset(batchsize=BATCH_SIZE)
     # get an empty reconstruction
-    reconstruction = map.reconstruct()
+    post_step_reconstruction = map.reconstruct()
     idxs_dim_0 = np.repeat(np.arange(BATCH_SIZE), ATTN_SIZE * ATTN_SIZE)
     idxs_dim_2 = attn[:, 0, :].flatten()
     idxs_dim_3 = attn[:, 1, :].flatten()
-    input_glimpses = state_batch[0][idxs_dim_0, :, idxs_dim_2, idxs_dim_3]
+    obs_mask = torch.zeros(BATCH_SIZE, 1, ENV_SIZE, ENV_SIZE)
+    obs_mask[idxs_dim_0, :, idxs_dim_2, idxs_dim_3] = 1
+    obs_mask = obs_mask.to(device)
+    minus_obs_mask = 1-obs_mask
     test_maps_prestep = []
     test_maps_poststep = []
+    test_locs = [loc[0].copy()]
     write_loss = 0
-    prestep_reconstruction_loss = 0
-    poststep_reconstruction_loss = 0
+    post_write_loss = 0
+    post_step_loss = 0
     overall_reconstruction_loss = []
     for t in range(1, seq_len):
-        reconstruction[idxs_dim_0, :, idxs_dim_2, idxs_dim_3] = input_glimpses
-        write_loss += map.write(reconstruction, (idxs_dim_0, idxs_dim_2, idxs_dim_3)).item()
-        reconstruction = map.reconstruct()  # post-write reconstruction
-        output_glimpses = reconstruction[idxs_dim_0, :, idxs_dim_2, idxs_dim_3]
-        # output_glimpses = output_glimpses.transpose(0, 1).view(-1, BATCH_SIZE, ATTN_SIZE, ATTN_SIZE).transpose(0, 1)
-        prestep_reconstruction_loss += mse(output_glimpses, input_glimpses).item()
-        test_maps_prestep.append(reconstruction[0].detach().cpu())
+        post_step_reconstruction = post_step_reconstruction * minus_obs_mask + state_batch[t-1] * obs_mask
+        write_loss += map.write(post_step_reconstruction.detach(), obs_mask, minus_obs_mask).item()
+        post_write_reconstruction = map.reconstruct()
+        post_write_loss += mse(post_write_reconstruction, state_batch[t-1], obs_mask).item()
+        test_maps_prestep.append(post_write_reconstruction[0].detach().cpu())
         # step forward the internal map
         map.step(action_batch[t-1])
         # select next attention spot
         # loc = np.array([locs[t],]*BATCH_SIZE)
-        loc = all_loc[t]
+        loc = glimpse_agent.step(map.map.detach().permute(0, 3, 1, 2))
+        loc = np.clip(loc, 1, 8).astype(np.int64)  # clip to avoid edges
         test_locs.append(loc[0].copy())
         attn = loc[range(BATCH_SIZE), :, np.newaxis] + xy  # get all indices in attention window size
         idxs_dim_0 = np.repeat(np.arange(BATCH_SIZE), ATTN_SIZE * ATTN_SIZE)
         idxs_dim_2 = attn[:, 0, :].flatten()
         idxs_dim_3 = attn[:, 1, :].flatten()
-        # now grab next glimpses
-        input_glimpses = state_batch[t][idxs_dim_0, :, idxs_dim_2, idxs_dim_3]
+        next_obs_mask = torch.zeros(BATCH_SIZE, 1, ENV_SIZE, ENV_SIZE)
+        next_obs_mask[idxs_dim_0, :, idxs_dim_2, idxs_dim_3] = 1
+        next_obs_mask = next_obs_mask.to(device)
         # compute reconstruction loss
-        reconstruction = map.reconstruct()
-        output_glimpses = reconstruction[idxs_dim_0, :, idxs_dim_2, idxs_dim_3]
-        poststep_reconstruction_loss += mse(output_glimpses, input_glimpses).item()
+        post_step_reconstruction = map.reconstruct()
+        post_step_loss += mse(post_step_reconstruction, state_batch[t], next_obs_mask).item()
         # calculate per-channel losses on overall image
         channel_loss = []
         for ch in range(CHANNELS):
-           channel_loss.append(mse(reconstruction[:, ch], state_batch[t][:, ch]).item())
+           channel_loss.append(mse_unmasked(post_step_reconstruction[:, ch], state_batch[t][:, ch]).item())
         overall_reconstruction_loss.append(channel_loss)
-        reconstruction = reconstruction.detach()
-        test_maps_poststep.append(reconstruction[0].cpu())
+        test_maps_poststep.append(post_step_reconstruction[0].detach().cpu())
+        obs_mask = next_obs_mask
+        minus_obs_mask = 1-obs_mask
     overall_reconstruction_loss = torch.FloatTensor(overall_reconstruction_loss)
-    test_loss = 0.01 * write_loss + prestep_reconstruction_loss + poststep_reconstruction_loss
+    test_loss = 0.01 * write_loss + post_write_loss + post_step_loss
     model_name = os.path.splitext(os.path.basename(path))[0]
     torch.save({
         'write_loss': 0.01 * write_loss,
-        'prestep_reconstruction_loss': prestep_reconstruction_loss,
-        'poststep_reconstruction_loss': poststep_reconstruction_loss,
+        'post write reconstruction loss': post_write_loss,
+        'post step reconstruction loss': post_step_loss,
         'overall_reconstruction_loss': overall_reconstruction_loss,
     }, os.path.join(env_name, 'loss_{}.pt'.format(model_name)))
     # save some generated images

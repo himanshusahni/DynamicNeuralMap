@@ -8,6 +8,7 @@ import matplotlib.gridspec as gridspec
 
 import torch
 from torch.utils.data import Dataset
+import torch.nn as nn
 
 
 class CurriculumDataset(Dataset):
@@ -154,6 +155,39 @@ def save_example_images(test_batch, test_maps_prestep, test_maps_poststep, test_
     plt.subplots_adjust(hspace=0.05, wspace=0.05)
     plt.savefig(path, bbox_inches=0)
     plt.close()
+
+
+class MinImposedMSE(object):
+    """version of MSE where a minimum loss is imposed on each pixel"""
+
+    def __init__(self, c=0.1):
+        """
+        :param c: minimum pixel-wise mse to impose
+        """
+        self.c = c
+        self.criteria = nn.MSELoss(reduction='none')
+
+    def __call__(self, output, target):
+        loss = self.criteria(output, target)
+        loss = torch.clamp(loss-self.c, min=0.)  # min loss = c
+        return loss.mean()
+
+
+class MinImposedMSEMasked(object):
+    """version of MSE where a minimum loss is imposed on each pixel"""
+
+    def __init__(self, c=0.1):
+        """
+        :param c: minimum pixel-wise mse to impose
+        """
+        self.c = c
+        self.criteria = nn.MSELoss(reduction='none')
+
+    def __call__(self, output, target, mask):
+        target = torch.rand_like(target)
+        loss = self.criteria(output, target) * mask
+        loss = torch.clamp(loss-self.c, min=0.)  # min loss = c
+        return loss.sum()/mask.sum()
 
 
 class AsyncSlicer:

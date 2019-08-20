@@ -56,17 +56,22 @@ test_loader = DataLoader(dataset, batch_size=1,
 test_loader_iter = iter(test_loader)
 
 # gpu?
-device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 print("will run on {} device!".format(device))
 
 # initialize map
 map = DynamicMap(size=ENV_SIZE, channels=CHANNELS, attn_size=ATTN_SIZE, device=device)
 map.to(device)
 # map.load('{}/map360000.pth'.format(env_name), device)
-# glimpse_net = GlimpseNetwork(nb_actions=2)
-# glimpse_net.to(device)
-# glimpse_agent = ReinforcePolicyContinuous(glimpse_net, device)
-mse = nn.MSELoss()
+glimpse_net = GlimpseNetwork(input_size=ENV_SIZE, channels=16, nb_actions=2)
+glimpse_net.to(device)
+glimpse_agent = ReinforcePolicyContinuous(
+    input_size=ENV_SIZE,
+    attn_size=ATTN_SIZE,
+    policy=glimpse_net,
+    device=device)
+# mse = nn.MSELoss()
+mse = MinImposedMSEMasked()
 bce = nn.BCELoss()
 optimizer = optim.Adam(map.parameters(), lr=1e-6)
 
@@ -75,69 +80,86 @@ xy = np.flip(np.array(np.meshgrid(attn_span, attn_span)), axis=0).reshape(2, -1)
 
 # iterate through data and learn!
 training_metrics = {
-    'loss': AverageMeter(),}
-    # 'policy loss': AverageMeter(),}
+    'loss': AverageMeter(),
+    'policy loss': AverageMeter(),}
 i_batch = 0
 start = time.time()
-for epoch in range(40000):
+for epoch in range(10000):
     train_loader_iter = iter(train_loader)
     for batch in train_loader_iter:
         state_batch, action_batch = batch
+        state_batch = state_batch.to(device)
         # pick starting locations of attention (random)
-        all_loc = np.random.rand(seq_len, BATCH_SIZE, 2)  # glimpse location (x,y) in [0,1]
-        all_loc = (all_loc*10)  # above in [0, 10]
-        all_loc = np.clip(all_loc, 1, 8).astype(np.int64)  # clip to avoid edges
-        loc = all_loc[0]
+        loc = np.random.rand(BATCH_SIZE, 2)  # glimpse location (x,y) in [0,1]
+        loc = (loc*ENV_SIZE)  # above in [0, 10]
+        loc = np.clip(loc, 1, 8).astype(np.int64)  # clip to avoid edges
         attn = loc[range(BATCH_SIZE), :, np.newaxis] + xy  # get all indices in attention window size
-        # attn_log_probs = []
-        # attn_rewards = []
-        # forward pass
+        # get started training!
+        attn_log_probs = []
+        attn_rewards = []
         total_loss = 0
         # initialize map with initial input glimpses
         map.reset(BATCH_SIZE)
         # get an empty reconstruction
-        reconstruction = map.reconstruct()
+        post_step_reconstruction = map.reconstruct()
         # gather initial glimpse from state
         idxs_dim_0 = np.repeat(np.arange(BATCH_SIZE), ATTN_SIZE * ATTN_SIZE)
         idxs_dim_2 = attn[:, 0, :].flatten()
         idxs_dim_3 = attn[:, 1, :].flatten()
-        input_glimpses = state_batch[0][idxs_dim_0, :, idxs_dim_2, idxs_dim_3]
-        input_glimpses = input_glimpses.to(device)
+        obs_mask = torch.zeros(BATCH_SIZE, 1, ENV_SIZE, ENV_SIZE)
+        obs_mask[idxs_dim_0, :, idxs_dim_2, idxs_dim_3] = 1
+        obs_mask = obs_mask.to(device)
+        minus_obs_mask = 1-obs_mask
+        # obs_mask = obs_mask.type(torch.ByteTensor)
+        # minus_obs_mask = minus_obs_mask.type(torch.ByteTensor)
+        # input_glimpses = state_batch[0][obs_mask]
+        # input_glimpses = state_batch[0][idxs_dim_0, :, idxs_dim_2, idxs_dim_3]
+        # input_glimpses = input_glimpses.to(device)
         for t in range(1, seq_len):
-            reconstruction[idxs_dim_0, :, idxs_dim_2, idxs_dim_3] = input_glimpses
-            write_loss = map.write(reconstruction.detach(), (idxs_dim_0, idxs_dim_2, idxs_dim_3))
+            # reconstruction[idxs_dim_0, :, idxs_dim_2, idxs_dim_3] = input_glimpses
+            post_step_reconstruction = post_step_reconstruction * minus_obs_mask + state_batch[t-1] * obs_mask
+            # reconstruction[obs_mask] = input_glimpses
+            write_loss = map.write(post_step_reconstruction.detach(), obs_mask, minus_obs_mask)
             # post-write reconstruction loss
-            reconstruction = map.reconstruct()
-            output_glimpses = reconstruction[idxs_dim_0, :, idxs_dim_2, idxs_dim_3]
+            post_write_reconstruction = map.reconstruct()
+            # output_glimpses = reconstruction[obs_mask]
             # output_glimpses = output_glimpses.transpose(0, 1).view(-1, BATCH_SIZE, ATTN_SIZE, ATTN_SIZE).transpose(0, 1)
-            loss = mse(output_glimpses, input_glimpses) + 0.01 * write_loss
+            post_write_loss = mse(post_write_reconstruction, state_batch[t-1], obs_mask)
             # step forward the internal map
             map.step(action_batch[t-1])
             # select next attention spot
+            loc = glimpse_agent.step(map.map.detach().permute(0, 3, 1, 2))
+            loc = np.clip(loc, 1, 8).astype(np.int64)  # clip to avoid edges
             # loc = np.random.rand(BATCH_SIZE, 2)  # glimpse location (x,y) in [0,1]
             # loc = (loc*10)  # above in [0, 10]
             # loc = np.clip(loc, 2, 7).astype(np.int64)  # clip to avoid edges
-            loc = all_loc[t]
             attn = loc[range(BATCH_SIZE), :, np.newaxis] + xy  # get all indices in attention window size
             # now grab next input glimpses
             idxs_dim_2 = attn[:, 0, :].flatten()
             idxs_dim_3 = attn[:, 1, :].flatten()
             # idxs_dim_0 remain the same
-            input_glimpses = state_batch[t][idxs_dim_0, :, idxs_dim_2, idxs_dim_3]
-            input_glimpses = input_glimpses.to(device)
+            next_obs_mask = torch.zeros(BATCH_SIZE, 1, ENV_SIZE, ENV_SIZE)
+            next_obs_mask[idxs_dim_0, :, idxs_dim_2, idxs_dim_3] = 1
+            next_obs_mask = next_obs_mask.to(device)
+            # obs_mask = obs_mask.type(torch.ByteTensor)
+            # input_glimpses = state_batch[t][obs_mask]
+            # input_glimpses = state_batch[t][idxs_dim_0, :, idxs_dim_2, idxs_dim_3]
             # compute post-step reconstruction loss
-            reconstruction = map.reconstruct()
-            output_glimpses = reconstruction[idxs_dim_0, :, idxs_dim_2, idxs_dim_3]
-            loss += mse(output_glimpses, input_glimpses)
+            post_step_reconstruction = map.reconstruct()
+            # output_glimpses = reconstruction[obs_mask]
+            post_step_loss = mse(post_step_reconstruction, state_batch[t], next_obs_mask)
             # save the loss as a reward for glimpse agent
-            # glimpse_agent.reward(loss.detach().cpu().numpy())
+            glimpse_agent.reward(post_step_loss.detach().cpu().numpy())
             # propogate backwards through entire graph
+            loss =  + 0.01 * write_loss + post_write_loss + post_step_loss
             loss.backward(retain_graph=True)
             total_loss += loss.item()
+            obs_mask = next_obs_mask
+            minus_obs_mask = 1-obs_mask
         optimizer.step()
-        # policy_loss = glimpse_agent.update()
+        policy_loss = glimpse_agent.update()
         training_metrics['loss'].update(total_loss)
-        # training_metrics['policy loss'].update(policy_loss)
+        training_metrics['policy loss'].update(policy_loss)
         i_batch += 1
 
         if i_batch % 1000 == 0:
@@ -150,7 +172,8 @@ for epoch in range(40000):
             start = time.time()
         if i_batch % 10000 == 0:
             print('saving network weights...')
-            map.save(os.path.join(env_name, 'conv_reconstructedwrite_pointread_map{}.pth'.format(i_batch)))
+            map.save(os.path.join(env_name, 'conv_controlledattention_reconstructedwrite_map{}.pth'.format(i_batch)))
+            torch.save(glimpse_net, os.path.join(env_name, 'conv_controlledattention_reconstructedwrite_glimpsenet{}.pth'.format(i_batch)))
         if i_batch % 20000 == 0:
             if seq_len < END_SEQ_LEN:
                 seq_len += 1
