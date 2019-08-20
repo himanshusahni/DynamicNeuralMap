@@ -60,7 +60,7 @@ mse_unmasked = MinImposedMSE()
 # saved models
 model_dir = '{}'.format(env_name)
 #model_paths = [os.path.join(model_dir, name) for name in os.listdir(model_dir) if name.endswith('pth') and 'pointread' in name]
-model_paths = [os.path.join(model_dir, name) for name in ['conv_controlledattention_reconstructedwrite_writemse_map20000.pth',]]
+model_paths = [os.path.join(model_dir, name) for name in ['conv_controlledattention_reconstructedwrite_writemse_map90000.pth',]]
 
 attn_span = range(-(ATTN_SIZE//2), ATTN_SIZE//2+1)
 xy = np.flip(np.array(np.meshgrid(attn_span, attn_span)), axis=0).reshape(2, -1)
@@ -92,7 +92,7 @@ for path in model_paths:
     map.reset(BATCH_SIZE)
     test_maps_prestep = []
     test_maps_poststep = []
-    test_locs = [loc[0].copy()]
+    test_locs = []
     abs_write_loss = 0
     mse_write_loss = 0
     reconstruction_loss = 0
