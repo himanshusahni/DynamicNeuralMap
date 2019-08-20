@@ -4,6 +4,7 @@ import torch.optim as optim
 import numpy as np
 
 from networks import *
+from utils import *
 
 
 class DynamicMap():
@@ -14,6 +15,7 @@ class DynamicMap():
         self.step_model = MapStep(channels=8)
         self.reconstruction_model = MapReconstruction(in_channels=16, out_channels=channels)
         self.device = device
+        self.mse = MSEMasked()
 
     def to(self, device):
         self.write_model.to(device)
@@ -27,10 +29,8 @@ class DynamicMap():
         :return:
         """
         self.map = torch.zeros((batchsize, self.size, self.size, 16)).to(self.device)
-        # net.hidden = (torch.zeros(1, BATCH_SIZE, 64).to(device),
-        #               torch.zeros(1, BATCH_SIZE, 64).to(device))
 
-    def write(self, glimpse, obs_mask, minus_obs_mask):
+    def prepare_write(self, glimpse, obs_mask, minus_obs_mask):
         """
         stores an incoming glimpse into the memory map
         :param glimpse: a (batchsize, *attention_dims) input to be stored in memory
@@ -40,11 +40,20 @@ class DynamicMap():
         w = self.write_model(glimpse).permute(0, 2, 3, 1)
         # write
         map_mask = obs_mask.permute(0, 2, 3, 1)
-        minus_map_mask = minus_obs_mask.permute(0, 2, 3, 1)
         w *= map_mask
+        w_mse = self.mse(w.detach(), self.map, map_mask)
+        return w, w.abs().sum()/map_mask.sum(), w_mse
+
+    def write(self, w, obs_mask, minus_obs_mask):
+        """
+        stores an incoming glimpse into the memory map
+        :param glimpse: a (batchsize, *attention_dims) input to be stored in memory
+        :param attn: indices of above glimpse in map coordinates (where to write)
+        """
+        # write
+        map_mask = obs_mask.permute(0, 2, 3, 1)
+        minus_map_mask = minus_obs_mask.permute(0, 2, 3, 1)
         self.map = self.map * minus_map_mask + w
-        # returns a cost of writing
-        return w.abs().sum()/map_mask.sum()
 
     def step(self, action):
         """
