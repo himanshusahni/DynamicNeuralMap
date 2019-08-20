@@ -151,7 +151,7 @@ for epoch in range(10000):
             # save the loss as a reward for glimpse agent
             glimpse_agent.reward(post_step_loss.detach().cpu().numpy())
             # propogate backwards through entire graph
-            loss =  + 0.01 * write_loss + post_write_loss + post_step_loss
+            loss = 0.01 * write_loss + post_write_loss + post_step_loss
             loss.backward(retain_graph=True)
             total_loss += loss.item()
             obs_mask = next_obs_mask

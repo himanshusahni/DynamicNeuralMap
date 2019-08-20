@@ -47,7 +47,7 @@ class DynamicMap():
         # w = w[idxs_dim_0, :, idxs_dim_2, idxs_dim_3]
         # self.map[idxs_dim_0, idxs_dim_2, idxs_dim_3, :] = w
         # returns a cost of writing
-        return w.abs().mean()
+        return w.abs().sum()/map_mask.sum()
 
     def step(self, action):
         """
