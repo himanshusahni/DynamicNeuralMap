@@ -110,29 +110,17 @@ for epoch in range(10000):
         obs_mask[idxs_dim_0, :, idxs_dim_2, idxs_dim_3] = 1
         obs_mask = obs_mask.to(device)
         minus_obs_mask = 1-obs_mask
-        # obs_mask = obs_mask.type(torch.ByteTensor)
-        # minus_obs_mask = minus_obs_mask.type(torch.ByteTensor)
-        # input_glimpses = state_batch[0][obs_mask]
-        # input_glimpses = state_batch[0][idxs_dim_0, :, idxs_dim_2, idxs_dim_3]
-        # input_glimpses = input_glimpses.to(device)
         for t in range(1, seq_len):
-            # reconstruction[idxs_dim_0, :, idxs_dim_2, idxs_dim_3] = input_glimpses
             post_step_reconstruction = post_step_reconstruction * minus_obs_mask + state_batch[t-1] * obs_mask
-            # reconstruction[obs_mask] = input_glimpses
             write_loss = map.write(post_step_reconstruction.detach(), obs_mask, minus_obs_mask)
             # post-write reconstruction loss
             post_write_reconstruction = map.reconstruct()
-            # output_glimpses = reconstruction[obs_mask]
-            # output_glimpses = output_glimpses.transpose(0, 1).view(-1, BATCH_SIZE, ATTN_SIZE, ATTN_SIZE).transpose(0, 1)
             post_write_loss = mse(post_write_reconstruction, state_batch[t-1], obs_mask)
             # step forward the internal map
             map.step(action_batch[t-1])
             # select next attention spot
             loc = glimpse_agent.step(map.map.detach().permute(0, 3, 1, 2))
             loc = np.clip(loc, 1, 8).astype(np.int64)  # clip to avoid edges
-            # loc = np.random.rand(BATCH_SIZE, 2)  # glimpse location (x,y) in [0,1]
-            # loc = (loc*10)  # above in [0, 10]
-            # loc = np.clip(loc, 2, 7).astype(np.int64)  # clip to avoid edges
             attn = loc[range(BATCH_SIZE), :, np.newaxis] + xy  # get all indices in attention window size
             # now grab next input glimpses
             idxs_dim_2 = attn[:, 0, :].flatten()
@@ -141,12 +129,8 @@ for epoch in range(10000):
             next_obs_mask = torch.zeros(BATCH_SIZE, 1, ENV_SIZE, ENV_SIZE)
             next_obs_mask[idxs_dim_0, :, idxs_dim_2, idxs_dim_3] = 1
             next_obs_mask = next_obs_mask.to(device)
-            # obs_mask = obs_mask.type(torch.ByteTensor)
-            # input_glimpses = state_batch[t][obs_mask]
-            # input_glimpses = state_batch[t][idxs_dim_0, :, idxs_dim_2, idxs_dim_3]
             # compute post-step reconstruction loss
             post_step_reconstruction = map.reconstruct()
-            # output_glimpses = reconstruction[obs_mask]
             post_step_loss = mse(post_step_reconstruction, state_batch[t], next_obs_mask)
             # save the loss as a reward for glimpse agent
             glimpse_agent.reward(post_step_loss.detach().cpu().numpy())

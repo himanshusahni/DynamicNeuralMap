@@ -38,14 +38,11 @@ class DynamicMap():
         """
         # what to write
         w = self.write_model(glimpse).permute(0, 2, 3, 1)
-        # w = self.write_model(glimpse)
         # write
         map_mask = obs_mask.permute(0, 2, 3, 1)
         minus_map_mask = minus_obs_mask.permute(0, 2, 3, 1)
         w *= map_mask
         self.map = self.map * minus_map_mask + w
-        # w = w[idxs_dim_0, :, idxs_dim_2, idxs_dim_3]
-        # self.map[idxs_dim_0, idxs_dim_2, idxs_dim_3, :] = w
         # returns a cost of writing
         return w.abs().sum()/map_mask.sum()
 
