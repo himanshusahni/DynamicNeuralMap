@@ -173,6 +173,17 @@ class MinImposedMSE(object):
         return loss.mean()
 
 
+class MSEMasked(object):
+    """MSE with a mask"""
+
+    def __init__(self):
+        self.criteria = nn.MSELoss(reduction='none')
+
+    def __call__(self, output, target, mask):
+        loss = self.criteria(output, target) * mask
+        return loss.sum()/mask.sum()
+
+
 class MinImposedMSEMasked(object):
     """version of MSE where a minimum loss is imposed on each pixel"""
 
@@ -184,7 +195,6 @@ class MinImposedMSEMasked(object):
         self.criteria = nn.MSELoss(reduction='none')
 
     def __call__(self, output, target, mask):
-        target = torch.rand_like(target)
         loss = self.criteria(output, target) * mask
         loss = torch.clamp(loss-self.c, min=0.)  # min loss = c
         return loss.sum()/mask.sum()
