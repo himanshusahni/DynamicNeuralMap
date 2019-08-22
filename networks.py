@@ -104,15 +104,23 @@ class GlimpseNetwork(nn.Module):
 class Trunk(nn.Module):
     """fully connected common trunk for value and policy functions"""
 
-    def __init__(self, obs_size):
+    def __init__(self, input_size, channels):
         super(Trunk, self).__init__()
-        self.fc1 = nn.Linear(obs_size, 64)
-        self.fc2 = nn.Linear(64, 64)
+        self.output_size = (channels, input_size, input_size)
+        self.conv1 = nn.Conv2d(channels, 32, 3, stride=2, padding=1)
+        self.conv2 = nn.Conv2d(32, 32, 3, stride=2, padding=1)
+        self.output_size = (32, input_size // 4 + 1, input_size // 4 + 1)
 
     def forward(self, x):
-        x = x.flatten(start_dim=1)
-        x = F.leaky_relu(self.fc1(x), 0.2)
-        return F.leaky_relu(self.fc2(x), 0.2)
+        """predict action"""
+        x = F.leaky_relu(self.conv1(x), 0.2)
+        x = F.leaky_relu(self.conv2(x), 0.2)
+        return x.flatten(start_dim=1)
+
+    def print_info(self):
+        print("Initializing trunk of glimpse network!")
+        print(self)
+        print("Total conv params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
 
 
 class ValueFunction(nn.Module):
@@ -120,7 +128,7 @@ class ValueFunction(nn.Module):
     def __init__(self, trunk):
         super(ValueFunction, self).__init__()
         self.trunk = trunk
-        self.fc1 = nn.Linear(64, 1)
+        self.fc1 = nn.Linear(np.prod(trunk.output_size), 1)
 
     def forward(self, x):
         return self.fc1(self.trunk(x))
@@ -131,7 +139,8 @@ class PolicyFunction(nn.Module):
     def __init__(self, trunk, nb_actions):
         super(PolicyFunction, self).__init__()
         self.trunk = trunk
-        self.fc1 = nn.Linear(64, nb_actions)
+        self.fc1 = nn.Linear(np.prod(trunk.output_size), nb_actions)
 
     def forward(self, x):
-        return self.fc1(self.trunk(x))
+        x = self.trunk(x)
+        return self.fc1(x)

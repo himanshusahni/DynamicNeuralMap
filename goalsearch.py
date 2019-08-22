@@ -2,6 +2,7 @@ import numpy as np
 
 import gym
 
+
 class GoalSearchEnv(object):
 
     def __init__(self, size):
@@ -9,7 +10,7 @@ class GoalSearchEnv(object):
         self.attention_size = 5
         self.map = np.zeros((self.size, self.size, 6))
         self.action_space = gym.spaces.Discrete(4)
-        self.observation_space = gym.spaces.Box(0, 1, (6, self.size, self.size), dtype=np.int32)
+        self.observation_space = gym.spaces.Box(0, 1, (self.size, self.size, 6), dtype=np.int32)
 
     def reset(self):
         self.ep_step = 0

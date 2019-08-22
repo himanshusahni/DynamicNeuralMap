@@ -181,7 +181,9 @@ class MSEMasked(object):
 
     def __call__(self, output, target, mask):
         loss = self.criteria(output, target) * mask
-        return loss.sum()/mask.sum()
+        loss = loss.view(loss.size(0), -1)
+        mask = mask.view(mask.size(0), -1)
+        return loss.sum(dim=1)/mask.sum(dim=1)
 
 
 class MinImposedMSEMasked(object):
@@ -197,7 +199,9 @@ class MinImposedMSEMasked(object):
     def __call__(self, output, target, mask):
         loss = self.criteria(output, target) * mask
         loss = torch.clamp(loss-self.c, min=0.)  # min loss = c
-        return loss.sum()/mask.sum()
+        loss = loss.view(loss.size(0), -1)
+        mask = mask.view(mask.size(0), -1)
+        return loss.sum(dim=1)/mask.sum(dim=1)
 
 
 class AsyncSlicer:
