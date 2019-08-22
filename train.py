@@ -123,6 +123,7 @@ for epoch in range(10000):
         post_step_loss = mse(post_step_reconstruction, state_batch[0], obs_mask)
         # save the loss as a reward for glimpse agent
         glimpse_agent.reward(post_step_loss.detach().cpu())
+        loss = 0
         for t in range(1, seq_len):
             post_step_reconstruction = post_step_reconstruction * minus_obs_mask + state_batch[t-1] * obs_mask
             write_loss = map.write(post_step_reconstruction.detach(), obs_mask, minus_obs_mask)
@@ -142,13 +143,13 @@ for epoch in range(10000):
             glimpse_agent.reward(post_step_loss.detach().cpu())
             post_step_loss = post_step_loss.mean()
             # propogate backwards through entire graph
-            loss = 0.01 * write_loss + post_write_loss + post_step_loss
-            loss.backward(retain_graph=True)
+            loss += 0.01 * write_loss + post_write_loss + post_step_loss
             total_write_loss += 0.01 * write_loss.item()
             total_post_write_loss += post_write_loss.item()
             total_post_step_loss += post_step_loss.item()
             obs_mask = next_obs_mask
             minus_obs_mask = 1-obs_mask
+        loss.backward()
         optimizer.step()
         policy_loss = glimpse_agent.update()
         training_metrics['write loss'].update(total_write_loss)
