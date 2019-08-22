@@ -56,7 +56,7 @@ mse_unmasked = MinImposedMSE()
 # saved models
 model_dir = '{}'.format(env_name)
 #model_paths = [os.path.join(model_dir, name) for name in os.listdir(model_dir) if name.endswith('pth') and 'pointread' in name]
-model_paths = [os.path.join(model_dir, name) for name in ['conv_a2cattention_map200000.pth',]]
+model_paths = [os.path.join(model_dir, name) for name in ['conv_a2cattention_writemse_map270000.pth',]]
 
 attn_span = range(-(ATTN_SIZE//2), ATTN_SIZE//2+1)
 xy = np.flip(np.array(np.meshgrid(attn_span, attn_span)), axis=0).reshape(2, -1)
@@ -111,16 +111,17 @@ for path in model_paths:
         # add in the glimpse
         prewrite_reconstruction = prewrite_reconstruction * minus_obs_mask + state_batch[t] * obs_mask
         w, w_abs, w_mse = map.prepare_write(prewrite_reconstruction.detach(), obs_mask, minus_obs_mask)
-        abs_write_loss += w_abs.item()
-        mse_write_loss += w_mse.item()
         # save the surprise loss as a reward for glimpse agent
         glimpse_agent.reward(w_mse)
+        w_mse = w_mse.mean()
+        abs_write_loss += w_abs.item()
+        mse_write_loss += w_mse.item()
         # now write into map
         map.write(w, obs_mask, minus_obs_mask)
         # post-write reconstruction loss (regularizer)
         post_write_reconstruction = map.reconstruct()
         test_maps_prestep.append(post_write_reconstruction[0].detach().cpu())
-        reconstruction_loss += mse(post_write_reconstruction, state_batch[t], obs_mask).item()
+        reconstruction_loss += mse(post_write_reconstruction, state_batch[t], obs_mask).mean().item()
         # step forward the internal map
         map.step(action_batch[t])
         # select next attention spot
