@@ -93,7 +93,9 @@ def create_attn_mask(loc):
 
 # iterate through data and learn!
 training_metrics = {
-    'loss': AverageMeter(),
+    'write loss': AverageMeter(),
+    'post write reconstruction': AverageMeter(),
+    'post step reconstruction': AverageMeter(),
     'policy loss': AverageMeter(),}
 i_batch = 0
 start = time.time()
@@ -110,7 +112,9 @@ for epoch in range(10000):
         # get started training!
         attn_log_probs = []
         attn_rewards = []
-        total_loss = 0
+        total_write_loss = 0
+        total_post_write_loss = 0
+        total_post_step_loss = 0
         # get an empty reconstruction
         post_step_reconstruction = map.reconstruct()
         # gather initial glimpse from state
@@ -140,12 +144,16 @@ for epoch in range(10000):
             # propogate backwards through entire graph
             loss = 0.01 * write_loss + post_write_loss + post_step_loss
             loss.backward(retain_graph=True)
-            total_loss += loss.item()
+            total_write_loss += 0.01 * write_loss.item()
+            total_post_write_loss += post_write_loss.item()
+            total_post_step_loss += post_step_loss.item()
             obs_mask = next_obs_mask
             minus_obs_mask = 1-obs_mask
         optimizer.step()
         policy_loss = glimpse_agent.update()
-        training_metrics['loss'].update(total_loss)
+        training_metrics['write loss'].update(total_write_loss)
+        training_metrics['post write reconstruction'].update(total_post_write_loss)
+        training_metrics['post step reconstruction'].update(total_post_step_loss)
         training_metrics['policy loss'].update(policy_loss)
         i_batch += 1
 
