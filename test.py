@@ -20,8 +20,8 @@ env = GoalSearchEnv(size=10)
 # args:
 SEED = 354
 ATTN_SIZE = 3
-ENV_SIZE = env.observation_space.shape[1]
-CHANNELS = env.observation_space.shape[0]
+ENV_SIZE = env.observation_space.shape[0]
+CHANNELS = env.observation_space.shape[2]
 BATCH_SIZE = 4
 
 np.random.seed(SEED)
@@ -48,29 +48,27 @@ print("will run on {} device!".format(device))
 # initialize map
 map = DynamicMap(size=ENV_SIZE, channels=CHANNELS, attn_size=ATTN_SIZE, device=device)
 map.to(device)
-glimpse_net = GlimpseNetwork(input_size=ENV_SIZE, channels=16, nb_actions=2)
-glimpse_net.to(device)
-glimpse_agent = ReinforcePolicyContinuous(
-    input_size=ENV_SIZE,
-    attn_size=ATTN_SIZE,
-    policy=glimpse_net,
-    device=device)
+net_trunk = Trunk(ENV_SIZE, 16)
+policy_network = PolicyFunction(net_trunk, 2)
+value_network = ValueFunction(net_trunk)
 mse = MinImposedMSEMasked()
 mse_unmasked = MinImposedMSE()
 # saved models
 model_dir = '{}'.format(env_name)
 #model_paths = [os.path.join(model_dir, name) for name in os.listdir(model_dir) if name.endswith('pth') and 'pointread' in name]
-model_paths = [os.path.join(model_dir, name) for name in ['conv_controlledattention_reconstructedwrite_map60000.pth',]]
+model_paths = [os.path.join(model_dir, name) for name in ['conv_a2cattention_map200000.pth',]]
 
 attn_span = range(-(ATTN_SIZE//2), ATTN_SIZE//2+1)
 xy = np.flip(np.array(np.meshgrid(attn_span, attn_span)), axis=0).reshape(2, -1)
 
 start = time.time()
+idxs_dim_0 = np.repeat(np.arange(BATCH_SIZE), ATTN_SIZE * ATTN_SIZE)
 for path in model_paths:
     # load the model
     map.load(path)
     # load the glimpse agent
-    glimpse_agent.policy = torch.load(path.replace("map", "glimpsenet")).to(device)
+    glimpsenet = torch.load(path.replace("map", "glimpsenet"))
+    glimpse_agent = A2CPolicy(ENV_SIZE, glimpsenet['policy_network'], glimpsenet['value_network'], device)
     map.to(device)
     # draw a testing batch
     try:
@@ -83,17 +81,17 @@ for path in model_paths:
     state_batch = state_batch.to(device)
     # locs = np.array(np.meshgrid(range(1,9,1), range(1,9,1))).transpose().reshape(-1,2)
     # loc = np.array([locs[0],]*BATCH_SIZE)
-    loc = np.random.rand(BATCH_SIZE, 2)  # glimpse location (x,y) in [0,1]
-    loc = (loc * ENV_SIZE)  # above in [0, 10]
-    loc = np.clip(loc, 1, 8).astype(np.int64)  # clip to avoid edges
-    attn = loc[range(BATCH_SIZE), :, np.newaxis] + xy  # get all indices in attention window size
+    # loc = np.random.rand(BATCH_SIZE, 2)  # glimpse location (x,y) in [0,1]
+    # loc = (loc * ENV_SIZE)  # above in [0, 10]
     # get started training!
     attn_log_probs = []
     attn_rewards = []
     map.reset(batchsize=BATCH_SIZE)
+    loc = glimpse_agent.step(map.map.detach().permute(0, 3, 1, 2))
+    loc = np.clip(loc, 1, 8).astype(np.int64)  # clip to avoid edges
+    attn = loc[range(BATCH_SIZE), :, np.newaxis] + xy  # get all indices in attention window size
     # get an empty reconstruction
     post_step_reconstruction = map.reconstruct()
-    idxs_dim_0 = np.repeat(np.arange(BATCH_SIZE), ATTN_SIZE * ATTN_SIZE)
     idxs_dim_2 = attn[:, 0, :].flatten()
     idxs_dim_3 = attn[:, 1, :].flatten()
     obs_mask = torch.zeros(BATCH_SIZE, 1, ENV_SIZE, ENV_SIZE)
@@ -111,7 +109,7 @@ for path in model_paths:
         post_step_reconstruction = post_step_reconstruction * minus_obs_mask + state_batch[t-1] * obs_mask
         write_loss += map.write(post_step_reconstruction.detach(), obs_mask, minus_obs_mask).item()
         post_write_reconstruction = map.reconstruct()
-        post_write_loss += mse(post_write_reconstruction, state_batch[t-1], obs_mask).item()
+        post_write_loss += mse(post_write_reconstruction, state_batch[t-1], obs_mask).mean().item()
         test_maps_prestep.append(post_write_reconstruction[0].detach().cpu())
         # step forward the internal map
         map.step(action_batch[t-1])
@@ -129,7 +127,7 @@ for path in model_paths:
         next_obs_mask = next_obs_mask.to(device)
         # compute reconstruction loss
         post_step_reconstruction = map.reconstruct()
-        post_step_loss += mse(post_step_reconstruction, state_batch[t], next_obs_mask).item()
+        post_step_loss += mse(post_step_reconstruction, state_batch[t], next_obs_mask).mean().item()
         # calculate per-channel losses on overall image
         channel_loss = []
         for ch in range(CHANNELS):
