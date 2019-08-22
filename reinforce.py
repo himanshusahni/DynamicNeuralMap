@@ -80,7 +80,8 @@ class A2CPolicy():
         logits = self.pi(x.to(self.device))
         action = self.policy(logits)
         self.actions.append(action)
-        action = self.input_size * action.detach().cpu().numpy()
+        # normalize actions to environment range
+        action = self.input_size * (action.detach().cpu().numpy() + 1) / 2
         return action
 
     def reward(self, r):
