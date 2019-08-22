@@ -23,7 +23,7 @@ env = GoalSearchEnv(size=10)
 BATCH_SIZE = 8
 SEED = 123
 START_SEQ_LEN = 5
-END_SEQ_LEN = 15
+END_SEQ_LEN = 25
 ATTN_SIZE = 3
 ENV_SIZE = env.observation_space.shape[0]
 CHANNELS = env.observation_space.shape[2]
