@@ -106,6 +106,7 @@ for epoch in range(10000):
         state_batch = state_batch.to(device)
         # initialize map with initial input glimpses
         map.reset(BATCH_SIZE)
+        optimizer.zero_grad()
         # pick starting locations of attention (random)
         loc = glimpse_agent.step(map.map.detach().permute(0, 3, 1, 2))
         loc = np.clip(loc, 1, 8).astype(np.int64)  # clip to avoid edges
