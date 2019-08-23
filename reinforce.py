@@ -62,7 +62,7 @@ class A2CPolicy():
     """uses pytorch-rl a2c"""
     def __init__(self, input_size, policy_network, value_network, device):
         self.input_size = float(input_size)
-        self.policy = policies.GaussianPolicy(device, sigma=1., sigma_min=0.1, n_steps_annealing=200000*40)
+        self.policy = policies.GaussianPolicy(device, sigma=1., sigma_min=0.1, n_steps_annealing=200000)
         self.device = device
         self.pi = policy_network
         self.states = []

@@ -73,7 +73,7 @@ glimpse_agent = A2CPolicy(ENV_SIZE, policy_network, value_network, device)
 # mse = nn.MSELoss()
 mse = MinImposedMSEMasked()
 bce = nn.BCELoss()
-optimizer = optim.Adam(map.parameters(), lr=1e-6)
+optimizer = optim.Adam(map.parameters(), lr=1e-4)
 
 attn_span = range(-(ATTN_SIZE//2), ATTN_SIZE//2+1)
 xy = np.flip(np.array(np.meshgrid(attn_span, attn_span)), axis=0).reshape(2, -1)
@@ -99,7 +99,7 @@ training_metrics = {
     'policy loss': AverageMeter(),}
 i_batch = 0
 start = time.time()
-for epoch in range(10000):
+for epoch in range(1000):
     train_loader_iter = iter(train_loader)
     for batch in train_loader_iter:
         state_batch, action_batch = batch
@@ -159,20 +159,21 @@ for epoch in range(10000):
         training_metrics['policy loss'].update(policy_loss)
         i_batch += 1
 
-        if i_batch % 1000 == 0:
+        if i_batch % 100 == 0:
             to_print = 'epoch [{}] batch [{}]'.format(epoch, i_batch)
             for key, value in training_metrics.items():
                 if type(value) == AverageMeter:
                     to_print += ", {}: {:.3f}".format(key, value.avg)
-            to_print += ", time/iter (ms): {:.3f}".format(1000 * (time.time() - start)/1000)
+            to_print += ", time/iter (ms): {:.3f}".format(1000 * (time.time() - start)/100)
             print(to_print)
+            print(glimpse_agent.policy.current_eps, glimpse_agent.policy.current_sigma)
             start = time.time()
-        if i_batch % 10000 == 0:
+        if i_batch % 5000 == 0:
             print('saving network weights...')
             map.save(os.path.join(env_name, 'conv_a2cattention_map{}.pth'.format(i_batch)))
             glimpse_net = {'policy_network': policy_network, 'value_network': value_network}
             torch.save(glimpse_net, os.path.join(env_name, 'conv_a2cattention_glimpsenet{}.pth'.format(i_batch)))
-        if i_batch % 20000 == 0:
+        if i_batch % 2000 == 0:
             if seq_len < END_SEQ_LEN:
                 seq_len += 1
                 dataset.set_seqlen(seq_len)
