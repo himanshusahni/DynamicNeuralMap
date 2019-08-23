@@ -78,7 +78,7 @@ class A2CPolicy():
         """predict action based on input and update internal storage"""
         self.states.append(x)
         logits = self.pi(x.to(self.device))
-        action = self.policy(logits)
+        action = self.policy(logits, test)
         self.actions.append(action)
         # normalize actions to environment range
         action = self.input_size * (action.detach().cpu().numpy() + 1) / 2
