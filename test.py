@@ -56,7 +56,7 @@ mse_unmasked = MinImposedMSE()
 # saved models
 model_dir = '{}'.format(env_name)
 #model_paths = [os.path.join(model_dir, name) for name in os.listdir(model_dir) if name.endswith('pth') and 'pointread' in name]
-model_paths = [os.path.join(model_dir, name) for name in ['conv_a2cattention_map200000.pth',]]
+model_paths = [os.path.join(model_dir, name) for name in ['conv_a2cattention_map120000.pth',]]
 
 attn_span = range(-(ATTN_SIZE//2), ATTN_SIZE//2+1)
 xy = np.flip(np.array(np.meshgrid(attn_span, attn_span)), axis=0).reshape(2, -1)
@@ -87,7 +87,7 @@ for path in model_paths:
     attn_log_probs = []
     attn_rewards = []
     map.reset(batchsize=BATCH_SIZE)
-    loc = glimpse_agent.step(map.map.detach().permute(0, 3, 1, 2))
+    loc = glimpse_agent.step(map.map.detach().permute(0, 3, 1, 2), test=True)
     loc = np.clip(loc, 1, 8).astype(np.int64)  # clip to avoid edges
     attn = loc[range(BATCH_SIZE), :, np.newaxis] + xy  # get all indices in attention window size
     # get an empty reconstruction
@@ -115,7 +115,7 @@ for path in model_paths:
         map.step(action_batch[t-1])
         # select next attention spot
         # loc = np.array([locs[t],]*BATCH_SIZE)
-        loc = glimpse_agent.step(map.map.detach().permute(0, 3, 1, 2))
+        loc = glimpse_agent.step(map.map.detach().permute(0, 3, 1, 2), test=True)
         loc = np.clip(loc, 1, 8).astype(np.int64)  # clip to avoid edges
         test_locs.append(loc[0].copy())
         attn = loc[range(BATCH_SIZE), :, np.newaxis] + xy  # get all indices in attention window size
