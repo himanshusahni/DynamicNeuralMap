@@ -75,7 +75,7 @@ class DynamicMap():
         }, path)
 
     def load(self, path):
-        models = torch.load(path)
+        models = torch.load(path, map_location='cpu')
         self.write_model = models['write']
         self.step_model = models['step']
         self.reconstruction_model = models['reconstruct']

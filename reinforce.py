@@ -62,44 +62,46 @@ class A2CPolicy():
     """uses pytorch-rl a2c"""
     def __init__(self, input_size, policy_network, value_network, device):
         self.input_size = float(input_size)
-        self.policy = policies.GaussianPolicy(device, sigma=1., sigma_min=0.1, n_steps_annealing=200000)
+        self.policy = policies.GaussianPolicy(device)
         self.device = device
         self.pi = policy_network
         self.states = []
         self.actions = []
         self.rewards = []
+        self.dones = []
         class Args:
             gamma = 0.9
             device = self.device
-            entropy_weighting = 0.01
+            entropy_weighting = 0.0001
         self.a2c = algorithms.A2C(policy_network, value_network, self.policy, Args)
 
-    def step(self, x, test=False):
+    def step(self, x, random=False, test=False):
         """predict action based on input and update internal storage"""
-        self.states.append(x)
-        logits = self.pi(x.to(self.device))
-        action = self.policy(logits, test)
-        self.actions.append(action)
+        if random:
+            action = np.random.uniform(low=-1, high=1, size=(x.size(0),2))
+        else:
+            self.states.append(x)
+            logits = self.pi(x.to(self.device))
+            action = self.policy(logits, test)
+            self.actions.append(action)
+            action = action.detach().cpu().numpy()
         # normalize actions to environment range
-        action = self.input_size * (action.detach().cpu().numpy() + 1) / 2
+        action = self.input_size * (action + 1) / 2
         return action
 
     def reward(self, r):
         self.rewards.append(r)
+        self.dones.append(torch.zeros((r.size(0),)))
 
-    def update(self):
-        # append random last state. doesn't matter as all rollouts end with done=1 so their value doesn't matter
-        self.states.append(torch.zeros_like(self.states[-1]))
-        states = torch.cat([s.unsqueeze(dim=0) for s in self.states], dim=0).to(self.device).transpose(0,1)
-        actions = torch.cat([s.unsqueeze(dim=0) for s in self.actions], dim=0).to(self.device).transpose(0,1)
-        rewards = torch.cat([s.unsqueeze(dim=0) for s in self.rewards], dim=0).to(self.device).transpose(0,1)
-        dones = torch.zeros_like(rewards).to(self.device)
-        dones[:, -1] = 1.
-        loss = self.a2c.update((states, actions, rewards, dones))
+    def update(self, metrics, skip_train=False):
+        if not skip_train:
+            exp = [(self.states[i], self.actions[i], self.rewards[i], self.dones[i]) for i in range(len(self.states))]
+            exp.append((torch.zeros_like(self.states[-1]), None, None, torch.ones_like(self.dones[-1])))
+            loss = self.a2c.update(exp, metrics)
         self.states = []
         self.actions = []
         self.rewards = []
-        return loss
+        self.dones = []
 
 
 class ReinforcePolicyContinuous(object):

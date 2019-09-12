@@ -8,21 +8,18 @@ from visdom_utils import *
 from reinforce import *
 from dynamicmap import DynamicMap
 
-from pytorch_rl import utils, algorithms, policies
-
 import time
 import numpy as np
 np.set_printoptions(precision=3)
 
-# env = 'Breakout-v4'
-env_name = 'Goalsearch-v1'
-from goalsearch import GoalSearchEnv
-env = GoalSearchEnv(size=10)
+env_name = 'DynamicObjects-v0'
+from dynamicobject import DynamicObjects
+env = DynamicObjects(size=10)
 
 # args:
 BATCH_SIZE = 8
 SEED = 123
-START_SEQ_LEN = 5
+START_SEQ_LEN = 25
 END_SEQ_LEN = 25
 ATTN_SIZE = 3
 ENV_SIZE = env.observation_space.shape[0]
@@ -32,30 +29,15 @@ np.random.seed(SEED)
 torch.manual_seed(SEED)
 
 # initialize training data
-# demo_dir = '../baby-a3c/preprocessed-demos-{}'.format(env)
 demo_dir = 'data-{}/'.format(env_name)
 print('using training data from {}'.format(demo_dir))
 dataset = CurriculumDataset(demo_dir=demo_dir, preload=False)
 seq_len = START_SEQ_LEN
 dataset.set_seqlen(seq_len)
 # create train test split on episodes
-nb_test_ep = 10
-nb_train_ep = len(dataset) - nb_test_ep
-print("{} training episodes, {} testing episodes".format(
-    nb_train_ep, nb_test_ep))
-idxs = list(range(len(dataset)))
-np.random.shuffle(idxs)
-train_idxs, test_idxs = idxs[:nb_train_ep], idxs[nb_train_ep:]
-train_idx_sampler, test_idx_sampler = \
-    SubsetRandomSampler(train_idxs), SubsetRandomSampler(test_idxs)
-
 train_loader = DataLoader(dataset, batch_size=BATCH_SIZE,
-                          sampler=train_idx_sampler, num_workers=8, collate_fn=time_collate,
+                          num_workers=8, collate_fn=time_collate,
                           drop_last=True, pin_memory=True)
-test_loader = DataLoader(dataset, batch_size=1,
-                         sampler=test_idx_sampler, num_workers=1, collate_fn=time_collate,
-                         drop_last=True, pin_memory=True)
-test_loader_iter = iter(test_loader)
 
 # gpu?
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -64,15 +46,11 @@ print("will run on {} device!".format(device))
 # initialize map
 map = DynamicMap(size=ENV_SIZE, channels=CHANNELS, attn_size=ATTN_SIZE, device=device)
 map.to(device)
-# map.load('{}/map360000.pth'.format(env_name), device)
 
-net_trunk = Trunk(ENV_SIZE, 16)
-policy_network = PolicyFunction(net_trunk, 2)
-value_network = ValueFunction(net_trunk)
+policy_network = PolicyFunction(CHANNELS, ENV_SIZE, 2)
+value_network = ValueFunction(CHANNELS, ENV_SIZE)
 glimpse_agent = A2CPolicy(ENV_SIZE, policy_network, value_network, device)
-# mse = nn.MSELoss()
-mse = MinImposedMSEMasked()
-bce = nn.BCELoss()
+mse = MSEMasked()
 optimizer = optim.Adam(map.parameters(), lr=1e-4)
 
 attn_span = range(-(ATTN_SIZE//2), ATTN_SIZE//2+1)
@@ -96,10 +74,15 @@ training_metrics = {
     'write loss': AverageMeter(),
     'post write reconstruction': AverageMeter(),
     'post step reconstruction': AverageMeter(),
-    'policy loss': AverageMeter(),}
+    'policy_loss': AverageMeter(),
+    'val_loss': AverageMeter(),
+    'policy_entropy': AverageMeter(),
+    'avg_reward': AverageMeter(),
+    'avg_val': AverageMeter(),}
+
 i_batch = 0
 start = time.time()
-for epoch in range(1000):
+for epoch in range(10000):
     train_loader_iter = iter(train_loader)
     for batch in train_loader_iter:
         state_batch, action_batch = batch
@@ -107,8 +90,10 @@ for epoch in range(1000):
         # initialize map with initial input glimpses
         map.reset(BATCH_SIZE)
         optimizer.zero_grad()
+        # get an empty reconstruction
+        post_step_reconstruction = map.reconstruct()
         # pick starting locations of attention (random)
-        loc = glimpse_agent.step(map.map.detach().permute(0, 3, 1, 2))
+        loc = glimpse_agent.step(post_step_reconstruction.detach())
         loc = np.clip(loc, 1, 8).astype(np.int64)  # clip to avoid edges
         # get started training!
         attn_log_probs = []
@@ -116,8 +101,6 @@ for epoch in range(1000):
         total_write_loss = 0
         total_post_write_loss = 0
         total_post_step_loss = 0
-        # get an empty reconstruction
-        post_step_reconstruction = map.reconstruct()
         # gather initial glimpse from state
         obs_mask = create_attn_mask(loc)
         minus_obs_mask = 1-obs_mask
@@ -133,30 +116,30 @@ for epoch in range(1000):
             post_write_loss = mse(post_write_reconstruction, state_batch[t-1], obs_mask).mean()
             # step forward the internal map
             map.step(action_batch[t-1])
+            post_step_reconstruction = map.reconstruct()
             # select next attention spot
-            loc = glimpse_agent.step(map.map.detach().permute(0, 3, 1, 2))
+            loc = glimpse_agent.step(post_step_reconstruction.detach())
             loc = np.clip(loc, 1, 8).astype(np.int64)  # clip to avoid edges
             next_obs_mask = create_attn_mask(loc)
             # compute post-step reconstruction loss
-            post_step_reconstruction = map.reconstruct()
             post_step_loss = mse(post_step_reconstruction, state_batch[t], next_obs_mask)
             # save the loss as a reward for glimpse agent
             glimpse_agent.reward(post_step_loss.detach().cpu())
             post_step_loss = post_step_loss.mean()
-            # propogate backwards through entire graph
+            # add up all losses
             loss += 0.01 * write_loss + post_write_loss + post_step_loss
             total_write_loss += 0.01 * write_loss.item()
             total_post_write_loss += post_write_loss.item()
             total_post_step_loss += post_step_loss.item()
             obs_mask = next_obs_mask
             minus_obs_mask = 1-obs_mask
+        # finally propagate loss back through entire training sequence
         loss.backward()
         optimizer.step()
-        policy_loss = glimpse_agent.update()
+        glimpse_agent.update(training_metrics)
         training_metrics['write loss'].update(total_write_loss)
         training_metrics['post write reconstruction'].update(total_post_write_loss)
         training_metrics['post step reconstruction'].update(total_post_step_loss)
-        training_metrics['policy loss'].update(policy_loss)
         i_batch += 1
 
         if i_batch % 100 == 0:
@@ -166,17 +149,9 @@ for epoch in range(1000):
                     to_print += ", {}: {:.3f}".format(key, value.avg)
             to_print += ", time/iter (ms): {:.3f}".format(1000 * (time.time() - start)/100)
             print(to_print)
-            print(glimpse_agent.policy.current_eps, glimpse_agent.policy.current_sigma)
             start = time.time()
-        if i_batch % 5000 == 0:
+        if i_batch % 1000 == 0:
             print('saving network weights...')
-            map.save(os.path.join(env_name, 'conv_a2cattention_map{}.pth'.format(i_batch)))
+            map.save(os.path.join(env_name, 'convwrite_reconstructionstate_nocurriculum/map{}.pth'.format(i_batch)))
             glimpse_net = {'policy_network': policy_network, 'value_network': value_network}
-            torch.save(glimpse_net, os.path.join(env_name, 'conv_a2cattention_glimpsenet{}.pth'.format(i_batch)))
-        if i_batch % 2000 == 0:
-            if seq_len < END_SEQ_LEN:
-                seq_len += 1
-                dataset.set_seqlen(seq_len)
-                train_loader_iter = iter(train_loader)
-                test_loader_iter = iter(test_loader)
-                break
+            torch.save(glimpse_net, os.path.join(env_name, 'convwrite_reconstructionstate_nocurriculum/glimpsenet{}.pth'.format(i_batch)))

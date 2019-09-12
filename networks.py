@@ -106,7 +106,6 @@ class Trunk(nn.Module):
 
     def __init__(self, input_size, channels):
         super(Trunk, self).__init__()
-        self.output_size = (channels, input_size, input_size)
         self.conv1 = nn.Conv2d(channels, 32, 3, stride=2, padding=1)
         self.conv2 = nn.Conv2d(32, 32, 3, stride=2, padding=1)
         self.output_size = (32, input_size // 4 + 1, input_size // 4 + 1)
@@ -123,24 +122,103 @@ class Trunk(nn.Module):
         print("Total conv params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
 
 
-class ValueFunction(nn.Module):
-    """value prediction layer on top of trunk above"""
-    def __init__(self, trunk):
-        super(ValueFunction, self).__init__()
-        self.trunk = trunk
-        self.fc1 = nn.Linear(np.prod(trunk.output_size), 1)
+class FCTrunk(nn.Module):
+    """fully connected common trunk for value and policy functions"""
+
+    def __init__(self, input_size):
+        super(FCTrunk, self).__init__()
+        self.fc1= nn.Linear(input_size, 32)
+        self.fc2 = nn.Linear(32, 32)
+        self.output_size = (32,)
 
     def forward(self, x):
-        return self.fc1(self.trunk(x))
+        """predict action"""
+        x = F.leaky_relu(self.fc1(x), 0.2)
+        x = F.leaky_relu(self.fc2(x), 0.2)
+        return x
+
+    def print_info(self):
+        print("Initializing trunk of glimpse network!")
+        print(self)
+        print("Total fc params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
+
+
+class ValueFunction(nn.Module):
+    """value prediction layer on top of trunk above"""
+    def __init__(self, channels, input_size):
+        super(ValueFunction, self).__init__()
+        self.conv1 = nn.Conv2d(channels, 16, 3, stride=2, padding=1)
+        input_size = (input_size + 1) // 2
+        self.conv2 = nn.Conv2d(16, 16, 3, stride=2, padding=1)
+        input_size = (input_size + 1) // 2
+        self.fc1 = nn.Linear(input_size * input_size * 16, 32)
+        self.fc2 = nn.Linear(32, 1)
+        self.print_info()
+
+    def forward(self, x):
+        x = F.leaky_relu(self.conv1(x), 0.2)
+        x = F.leaky_relu(self.conv2(x), 0.2)
+        x = x.flatten(start_dim=1)
+        x = F.leaky_relu(self.fc1(x), 0.2)
+        return self.fc2(x)
+
+    def print_info(self):
+        print("Initializing value function of glimpse agent!")
+        print(self)
+        print("Total params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
+
+class FCValueFunction(nn.Module):
+    """value prediction layer on top of trunk above"""
+    def __init__(self, input_size):
+        super(FCValueFunction, self).__init__()
+        self.fc1 = nn.Linear(input_size, 32)
+        self.fc2 = nn.Linear(32, 32)
+        self.fc3 = nn.Linear(32, 1)
+
+    def forward(self, x):
+        x = F.leaky_relu(self.fc1(x), 0.2)
+        x = F.leaky_relu(self.fc2(x), 0.2)
+        return self.fc3(x)
 
 
 class PolicyFunction(nn.Module):
     """policy prediction layer on top of trunk above"""
-    def __init__(self, trunk, nb_actions):
+    def __init__(self, channels, input_size, nb_actions):
         super(PolicyFunction, self).__init__()
-        self.trunk = trunk
-        self.fc1 = nn.Linear(np.prod(trunk.output_size), nb_actions)
+        self.conv1 = nn.Conv2d(channels, 16, 3, stride=2, padding=1)
+        input_size = (input_size + 1) // 2
+        self.conv2 = nn.Conv2d(16, 16, 3, stride=2, padding=1)
+        input_size = (input_size + 1) // 2
+        self.fc1 = nn.Linear(input_size * input_size * 16, 32)
+        self.fc2 = nn.Linear(32, nb_actions)
+        self.fc3 = nn.Linear(32, 1)
+        self.print_info()
 
     def forward(self, x):
-        x = self.trunk(x)
-        return self.fc1(x)
+        x = F.leaky_relu(self.conv1(x), 0.2)
+        x = F.leaky_relu(self.conv2(x), 0.2)
+        x = x.flatten(start_dim=1)
+        x = F.leaky_relu(self.fc1(x), 0.2)
+        return self.fc2(x), self.fc3(x)
+        # return self.fc2(x)
+
+    def print_info(self):
+        print("Initializing policy function of glimpse agent!")
+        print(self)
+        print("Total params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
+
+
+class FCPolicyFunction(nn.Module):
+    """policy prediction layer on top of trunk above"""
+    def __init__(self, input_size, nb_actions):
+        super(FCPolicyFunction, self).__init__()
+        self.fc1 = nn.Linear(input_size, 32)
+        self.fc2 = nn.Linear(32, 32)
+        self.fc3 = nn.Linear(32, nb_actions)
+        self.fc4 = nn.Linear(32, 1)
+
+    def forward(self, x):
+        x = F.leaky_relu(self.fc1(x), 0.2)
+        x = F.leaky_relu(self.fc2(x), 0.2)
+        return self.fc3(x), self.fc4(x)
+        # return self.fc3(x)
