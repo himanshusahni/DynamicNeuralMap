@@ -31,9 +31,7 @@ class MapStep(nn.Module):
 
     def __init__(self, channels):
         super(MapStep, self).__init__()
-        self.conv = nn.Conv2d(channels, channels, 3, stride=1, padding=1)
-        # self.conv = nn.Conv2d(1, 1, 3, stride=1, padding=1)
-        # self.conv = [nn.Conv2d(1, 1, 3, stride=1, padding=1) for _ in range(channels)]
+        self.conv = torch.nn.Conv2d(channels, channels, 3, stride=1, padding=1, groups=channels)
         self.print_info()
 
     def print_info(self):
@@ -42,22 +40,8 @@ class MapStep(nn.Module):
         print("Total conv params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
 
     def forward(self, x):
-        # batchsize = x.size(0)
-        # channels = x.size(1)
-        # x = x.reshape(-1, 1, x.size(2), x.size(3))
-        # x = F.leaky_relu(self.conv(x), 0.2)
-        # return x.view(batchsize, channels, x.size(2), x.size(3))
         return F.leaky_relu(self.conv(x), 0.2)
 
-    # def forward(self, x):
-    #     o = []
-    #     for i, c in enumerate(self.conv):
-    #         o.append(c(x[:,i,:,:].unsqueeze(dim=1)))
-    #     return F.leaky_relu(torch.cat(o, dim=1), 0.2)
-    #
-    # def to(self, device):
-    #     super(MapStep, self).to(device)
-    #     self.conv = [c.to(device) for c in self.conv]
 
 class MapWrite(nn.Module):
     """what to write in static and dynamic parts of map"""
