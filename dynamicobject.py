@@ -29,6 +29,11 @@ class DynamicObjects(object):
     def reset(self):
         self.ep_step = 0
         self.map = np.zeros((self.size, self.size, 4))
+        # place border walls
+        self.map[0, :, 3] = 1  # wall on channel 3
+        self.map[self.size-1, :, 3] = 1  # wall on channel 3
+        self.map[:, 0, 3] = 1  # wall on channel 3
+        self.map[:, self.size-1, 3] = 1  # wall on channel 3
         # place vertical wall
         wall_x = np.random.randint(1, self.size - 1)
         wall_height = np.random.randint(1, self.size - 1)
@@ -105,7 +110,7 @@ class DynamicObjects(object):
         for ind in zip(*w_inds):
             map_image[ind[0]*40:(ind[0]+1)*40, ind[1]*40:(ind[1]+1)*40, :] = [0, 0, 0]  # walls are black
         # multiply the map image onto itself
-        return np.rot90(map_image.astype(np.uint8), k=1)
+        return np.rot90(map_image.astype(np.uint8))
 
     def get_reward_done(self):
         # end due to timesteps

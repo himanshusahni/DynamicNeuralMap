@@ -11,7 +11,6 @@ class MapReconstruction(nn.Module):
     def __init__(self, in_channels, out_channels):
         super(MapReconstruction, self).__init__()
         # decode the map back to original size
-        # self.deconv = nn.ConvTranspose2d(in_channels, out_channels, 3, stride=1, padding=1)
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.conv = nn.Conv2d(in_channels, out_channels, 3, stride=1, padding=1)
@@ -29,9 +28,39 @@ class MapReconstruction(nn.Module):
 class MapStep(nn.Module):
     """Forward dynamics model for neural attention maps"""
 
-    def __init__(self, channels):
+    def __init__(self, in_channels, out_channels):
         super(MapStep, self).__init__()
-        self.conv = torch.nn.Conv2d(channels, channels, 3, stride=1, padding=1, groups=channels)
+        # convolve
+        self.conv1 = torch.nn.Conv2d(in_channels, out_channels, 3, stride=1, padding=1)
+        self.conv2 = torch.nn.Conv2d(in_channels+out_channels, out_channels, 3, stride=1, padding=1)
+        self.print_info()
+
+    def print_info(self):
+        print("Initializing step network!")
+        print(self)
+        print("Total conv params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
+
+    def forward(self, inp):
+        x = F.leaky_relu(self.conv1(inp), 0.2)
+        # residual connection
+        x = torch.cat((inp, x), dim=1)
+        return F.leaky_relu(self.conv2(x), 0.2)
+
+
+class MapStepRot(nn.Module):
+    """Forward dynamics model for neural attention maps"""
+
+    def __init__(self, channels):
+        super(MapStepRot, self).__init__()
+        # convolve
+        self.conv_weights = torch.nn.Parameter(data=torch.Tensor(channels, channels, 9), requires_grad=True)
+        conv_init = np.random.rand(channels, 1, 9)
+        self.conv_weights.data = torch.from_numpy(conv_init.astype(np.float32))
+        self.channels = channels
+        # rotate
+        self.rot_weights = torch.nn.Parameter(data=torch.Tensor(channels, channels, 1, 1), requires_grad=True)
+        orthonormal_init = np.linalg.qr(np.random.rand(channels, channels))[0]
+        self.rot_weights.data = torch.from_numpy(orthonormal_init.astype(np.float32)).view(channels, channels, 1, 1)
         self.print_info()
 
     def print_info(self):
@@ -40,7 +69,10 @@ class MapStep(nn.Module):
         print("Total conv params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
 
     def forward(self, x):
-        return F.leaky_relu(self.conv(x), 0.2)
+        weights = F.softmax(self.conv_weights, dim=-1).view(self.channels, 1, 3, 3)
+        x = F.conv2d(x, weights, padding=1, groups=self.channels)
+        # rot now
+        return F.conv2d(x, self.rot_weights)
 
 
 class MapWrite(nn.Module):
@@ -58,31 +90,6 @@ class MapWrite(nn.Module):
 
     def forward(self, x):
         return F.leaky_relu(self.conv(x), 0.2)
-
-
-class GlimpseNetwork(nn.Module):
-    """using embedding from above decides where the next glimpse should be"""
-
-    def __init__(self, input_size, channels, nb_actions):
-        super(GlimpseNetwork, self).__init__()
-        self.conv1 = nn.Conv2d(channels, 8, 3, stride=1, padding=1)
-        self.conv2 = nn.Conv2d(8, 4, 3, stride=2, padding=1)
-        self.fc1 = nn.Linear((input_size//2) * (input_size//2) * 4, 64)
-        self.fc2 = nn.Linear(64, nb_actions)
-        self.print_info()
-
-    def print_info(self):
-        print("Initializing glimpse network!")
-        print(self)
-        print("Total trainable params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
-
-    def forward(self, x):
-        """predict action"""
-        x = F.leaky_relu(self.conv1(x), 0.2)
-        x = F.leaky_relu(self.conv2(x), 0.2)
-        x = x.flatten(start_dim=1)
-        x = F.leaky_relu(self.fc1(x), 0.2)
-        return torch.tanh(self.fc2(x))
 
 
 class Trunk(nn.Module):
@@ -167,24 +174,17 @@ class FCValueFunction(nn.Module):
 
 class PolicyFunction(nn.Module):
     """policy prediction layer on top of trunk above"""
-    def __init__(self, channels, input_size, nb_actions):
+    def __init__(self, channels):
         super(PolicyFunction, self).__init__()
-        self.conv1 = nn.Conv2d(channels, 16, 3, stride=2, padding=1)
-        input_size = (input_size + 1) // 2
-        self.conv2 = nn.Conv2d(16, 16, 3, stride=2, padding=1)
-        input_size = (input_size + 1) // 2
-        self.fc1 = nn.Linear(input_size * input_size * 16, 32)
-        self.fc2 = nn.Linear(32, nb_actions)
-        self.fc3 = nn.Linear(32, 1)
+        self.conv1 = nn.Conv2d(channels, 16, 3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(16, 16, 3, stride=1, padding=1)
+        self.conv3 = nn.Conv2d(16, 1, 3, stride=1, padding=1)
         self.print_info()
 
     def forward(self, x):
         x = F.leaky_relu(self.conv1(x), 0.2)
         x = F.leaky_relu(self.conv2(x), 0.2)
-        x = x.flatten(start_dim=1)
-        x = F.leaky_relu(self.fc1(x), 0.2)
-        return self.fc2(x), self.fc3(x)
-        # return self.fc2(x)
+        return self.conv3(x).flatten(start_dim=1)
 
     def print_info(self):
         print("Initializing policy function of glimpse agent!")

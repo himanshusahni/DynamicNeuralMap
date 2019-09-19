@@ -11,7 +11,7 @@ class DynamicMap():
         self.size = size
         self.attn_size = attn_size
         self.write_model = MapWrite(attn_size, in_channels=channels, out_channels=16)
-        self.step_model = MapStep(channels=8)
+        self.step_model = MapStep(in_channels=16, out_channels=8)
         self.reconstruction_model = MapReconstruction(in_channels=16, out_channels=channels)
         self.device = device
 
@@ -27,8 +27,6 @@ class DynamicMap():
         :return:
         """
         self.map = torch.zeros((batchsize, self.size, self.size, 16)).to(self.device)
-        # net.hidden = (torch.zeros(1, BATCH_SIZE, 64).to(device),
-        #               torch.zeros(1, BATCH_SIZE, 64).to(device))
 
     def write(self, glimpse, obs_mask, minus_obs_mask):
         """
@@ -51,9 +49,8 @@ class DynamicMap():
         uses the model to advance the map by a step
         :param action: (batchsize,) actions taken by agent
         """
-        # only dynamic part of map is stepped
-        dynamic = self.map[:, :, :, 8:]
-        dynamic = self.step_model(dynamic.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
+        # only dynamic part of map is stepped, the whole map is provided as input
+        dynamic = self.step_model(self.map.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
         self.map[:, :, :, 8:] = dynamic
 
     def reconstruct(self):

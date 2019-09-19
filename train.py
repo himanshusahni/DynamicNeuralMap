@@ -29,7 +29,7 @@ np.random.seed(SEED)
 torch.manual_seed(SEED)
 
 # initialize training data
-demo_dir = 'data-{}/'.format(env_name)
+demo_dir = 'data2-{}/'.format(env_name)
 print('using training data from {}'.format(demo_dir))
 dataset = CurriculumDataset(demo_dir=demo_dir, preload=False)
 seq_len = START_SEQ_LEN
@@ -40,15 +40,15 @@ train_loader = DataLoader(dataset, batch_size=BATCH_SIZE,
                           drop_last=True, pin_memory=True)
 
 # gpu?
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 print("will run on {} device!".format(device))
 
 # initialize map
 map = DynamicMap(size=ENV_SIZE, channels=CHANNELS, attn_size=ATTN_SIZE, device=device)
 map.to(device)
 
-policy_network = PolicyFunction(CHANNELS, ENV_SIZE, 2)
-value_network = ValueFunction(CHANNELS, ENV_SIZE)
+policy_network = PolicyFunction(16)
+value_network = ValueFunction(16, ENV_SIZE)
 glimpse_agent = A2CPolicy(ENV_SIZE, policy_network, value_network, device)
 mse = MSEMasked()
 optimizer = optim.Adam(map.parameters(), lr=1e-4)
@@ -56,7 +56,6 @@ optimizer = optim.Adam(map.parameters(), lr=1e-4)
 attn_span = range(-(ATTN_SIZE//2), ATTN_SIZE//2+1)
 xy = np.flip(np.array(np.meshgrid(attn_span, attn_span)), axis=0).reshape(2, -1)
 idxs_dim_0 = np.repeat(np.arange(BATCH_SIZE), ATTN_SIZE * ATTN_SIZE)
-
 
 def create_attn_mask(loc):
     """create a batched mask out of batched attention locations"""
@@ -93,7 +92,7 @@ for epoch in range(10000):
         # get an empty reconstruction
         post_step_reconstruction = map.reconstruct()
         # pick starting locations of attention (random)
-        loc = glimpse_agent.step(post_step_reconstruction.detach())
+        loc = glimpse_agent.step(map.map.detach().permute(0, 3, 1, 2), random=False)
         loc = np.clip(loc, 1, 8).astype(np.int64)  # clip to avoid edges
         # get started training!
         attn_log_probs = []
@@ -118,7 +117,7 @@ for epoch in range(10000):
             map.step(action_batch[t-1])
             post_step_reconstruction = map.reconstruct()
             # select next attention spot
-            loc = glimpse_agent.step(post_step_reconstruction.detach())
+            loc = glimpse_agent.step(map.map.detach().permute(0, 3, 1, 2), random=False)
             loc = np.clip(loc, 1, 8).astype(np.int64)  # clip to avoid edges
             next_obs_mask = create_attn_mask(loc)
             # compute post-step reconstruction loss
@@ -136,7 +135,7 @@ for epoch in range(10000):
         # finally propagate loss back through entire training sequence
         loss.backward()
         optimizer.step()
-        glimpse_agent.update(training_metrics)
+        glimpse_agent.update(training_metrics, skip_train=False)
         training_metrics['write loss'].update(total_write_loss)
         training_metrics['post write reconstruction'].update(total_post_write_loss)
         training_metrics['post step reconstruction'].update(total_post_step_loss)
@@ -151,7 +150,8 @@ for epoch in range(10000):
             print(to_print)
             start = time.time()
         if i_batch % 1000 == 0:
-            print('saving network weights...')
-            map.save(os.path.join(env_name, 'convwrite_reconstructionstate_nocurriculum/map{}.pth'.format(i_batch)))
+            agentsavepath = os.path.join(env_name, 'fullyconvglimpseagent_mapinput_newstep3')
+            print('saving network weights to {} ...'.format(agentsavepath))
+            map.save(os.path.join(agentsavepath, 'map{}.pth'.format(i_batch)))
             glimpse_net = {'policy_network': policy_network, 'value_network': value_network}
-            torch.save(glimpse_net, os.path.join(env_name, 'convwrite_reconstructionstate_nocurriculum/glimpsenet{}.pth'.format(i_batch)))
+            torch.save(glimpse_net, os.path.join(agentsavepath, 'glimpsenet{}.pth'.format(i_batch)))

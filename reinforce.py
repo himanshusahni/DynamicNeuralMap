@@ -61,8 +61,8 @@ class ReinforcePolicyDiscrete(object):
 class A2CPolicy():
     """uses pytorch-rl a2c"""
     def __init__(self, input_size, policy_network, value_network, device):
-        self.input_size = float(input_size)
-        self.policy = policies.GaussianPolicy(device)
+        self.input_size = input_size
+        self.policy = policies.MultinomialPolicy()
         self.device = device
         self.pi = policy_network
         self.states = []
@@ -72,13 +72,13 @@ class A2CPolicy():
         class Args:
             gamma = 0.9
             device = self.device
-            entropy_weighting = 0.0001
+            entropy_weighting = 0.001
         self.a2c = algorithms.A2C(policy_network, value_network, self.policy, Args)
 
     def step(self, x, random=False, test=False):
         """predict action based on input and update internal storage"""
         if random:
-            action = np.random.uniform(low=-1, high=1, size=(x.size(0),2))
+            action = np.random.randint(0, self.input_size * self.input_size)
         else:
             self.states.append(x)
             logits = self.pi(x.to(self.device))
@@ -86,7 +86,8 @@ class A2CPolicy():
             self.actions.append(action)
             action = action.detach().cpu().numpy()
         # normalize actions to environment range
-        action = self.input_size * (action + 1) / 2
+        action = np.unravel_index(action, (self.input_size, self.input_size))
+        action = np.array(list(zip(*action)))
         return action
 
     def reward(self, r):

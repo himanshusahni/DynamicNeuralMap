@@ -87,7 +87,7 @@ def time_collate(batch):
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
-    def __init__(self, reset_freq=1000):
+    def __init__(self, reset_freq=100):
         self.reset_freq = reset_freq
         self.reset()
 
@@ -129,11 +129,11 @@ def save_one_img(map, path, env, loc=None, size=None, attn_size=None):
     plt.close()
 
 
-def save_example_images(test_batch, test_maps_prestep, test_maps_poststep, test_locs, path, env):
+def save_example_images(test_batch, heatmap, test_maps_prestep, test_maps_poststep, test_locs, path, env):
     """creates a display friendly visualization of results"""
     attn_size = 3
     size = 10
-    fig, axarr = plt.subplots(len(test_maps_prestep), 3, figsize=(2*3, 2*len(test_maps_prestep)))
+    fig, axarr = plt.subplots(len(test_maps_prestep), 4, figsize=(2*4, 2*len(test_maps_prestep)))
     for t in range(len(test_maps_prestep)):
         display_state = env.render(test_batch[t].squeeze().permute(1, 2, 0).numpy())
         axarr[t, 0].imshow(display_state)
@@ -144,14 +144,19 @@ def save_example_images(test_batch, test_maps_prestep, test_maps_poststep, test_
             ((test_locs[t][0]-attn_size//2)*40, (size-1-test_locs[t][1]-attn_size//2)*40),
             attn_size*40, attn_size*40, linewidth=2, edgecolor='y', facecolor='none')
         axarr[t, 0].add_patch(attention)
-        display_prestep = env.render(test_maps_prestep[t].permute(1, 2, 0).numpy())
-        axarr[t, 1].imshow(display_prestep)
+        # now show heatmap of agent
+        display_heatmap = np.rot90(heatmap[t].squeeze().numpy())
+        axarr[t, 1].imshow(display_heatmap)
         axarr[t, 1].set_xticks([])
         axarr[t, 1].set_yticks([])
-        display_poststep = env.render(test_maps_poststep[t].permute(1, 2, 0).numpy())
-        axarr[t, 2].imshow(display_poststep)
+        display_prestep = env.render(test_maps_prestep[t].permute(1, 2, 0).numpy())
+        axarr[t, 2].imshow(display_prestep)
         axarr[t, 2].set_xticks([])
         axarr[t, 2].set_yticks([])
+        display_poststep = env.render(test_maps_poststep[t].permute(1, 2, 0).numpy())
+        axarr[t, 3].imshow(display_poststep)
+        axarr[t, 3].set_xticks([])
+        axarr[t, 3].set_yticks([])
     plt.subplots_adjust(hspace=0.05, wspace=0.05)
     plt.savefig(path, bbox_inches=0)
     plt.close()
