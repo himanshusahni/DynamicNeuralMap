@@ -12,22 +12,38 @@ import numpy as np
 import os
 np.set_printoptions(precision=3)
 
-env_name = 'DynamicObjects-v0'
-from dynamicobject import DynamicObjects
-env = DynamicObjects(size=10)
-
 # args:
-SEED = 354
-ATTN_SIZE = 3
-ENV_SIZE = env.observation_space.shape[0]
-CHANNELS = env.observation_space.shape[2]
 BATCH_SIZE = 4
+SEED = 123
+ATTN_SIZE = 5
+# ENV_SIZE = 16
+# MAP_SIZE = 8
+ATTN_SIZE = 21
+ENV_SIZE = 84
+MAP_SIZE = 21
+MAP_CHANNELS = 64
+
+# env_name = 'DynamicObjects-v1'
+# from dynamicobject import DynamicObjects
+# env = DynamicObjects(size=ENV_SIZE)
+# CHANNELS = env.observation_space.shape[2]
+# env_name = 'PhysEnv'
+# env_name = 'Breakout-v4'
+env_name = 'Pong-v4'
+CHANNELS = 3
+class ENV:
+    def render(self, img):
+        img = (img + 1)/2.
+        img = img * 255
+        img = img.astype(np.uint8)
+        return img
+env = ENV()
 
 np.random.seed(SEED)
 torch.manual_seed(SEED)
 
 # initialize training data
-demo_dir = 'data-{}/'.format(env_name)
+demo_dir = '/home/himanshu/experiments/DynamicNeuralMap/trainingdata-{}/'.format(env_name)
 print('using training data from {}'.format(demo_dir))
 dataset = CurriculumDataset(demo_dir=demo_dir, preload=False)
 seq_len = 64
@@ -44,17 +60,16 @@ device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 print("will run on {} device!".format(device))
 
 # initialize map
-map = DynamicMap(size=ENV_SIZE, channels=CHANNELS, attn_size=ATTN_SIZE, device=device)
+map = DynamicMap(size=MAP_SIZE, channels=MAP_CHANNELS, env_size=ENV_SIZE, env_channels=CHANNELS, batchsize=BATCH_SIZE, device=device)
 map.to(device)
 mse = MSEMasked()
 mse_unmasked = nn.MSELoss(reduction='none')
 # saved models
-name = 'fullyconvglimpseagent_mapinput_newstep3'
-model_dir = '{}/{}/'.format(env_name, name)
+name = '21map_faithfulnetwork_residualstep'
+model_dir = '/home/himanshu/experiments/DynamicNeuralMap/{}/{}/'.format(env_name, name)
 model_paths = [os.path.join(model_dir, name) for name in os.listdir(model_dir)
                if name.endswith('pth') and
-               # ('100000' in name or '150000' in name or '200000' in name or '250000' in name or '300000' in name) and
-               # '630000' in name and
+               # '85000' in name and
                'map' in name]
 
 attn_span = range(-(ATTN_SIZE//2), ATTN_SIZE//2+1)
@@ -69,7 +84,11 @@ for path in model_paths:
     # load the glimpse agent
     pathdir, pathname = os.path.split(path)
     glimpsenet = torch.load(os.path.join(pathdir, pathname.replace("map", "glimpsenet")), map_location='cpu')
-    glimpse_agent = A2CPolicy(ENV_SIZE, glimpsenet['policy_network'], glimpsenet['value_network'], device)
+    glimpse_agent = A2CPolicy(
+        output_size=ENV_SIZE,
+        policy_network=glimpsenet['policy_network'],
+        value_network=glimpsenet['value_network'],
+        device=device)
     map.to(device)
     # draw a testing batch
     try:
@@ -77,7 +96,7 @@ for path in model_paths:
     except StopIteration:
         test_loader_iter = iter(test_loader)
         test_batch = next(test_loader_iter)
-    state_batch, action_batch = test_batch
+    state_batch = test_batch
     # send to gpu
     state_batch = state_batch.to(device)
     attn_log_probs = []
@@ -92,13 +111,13 @@ for path in model_paths:
     sigma = []
     overall_reconstruction_loss = []
     # start!
-    map.reset(batchsize=BATCH_SIZE)
+    map.reset()
     # get an empty reconstruction
     post_step_reconstruction = map.reconstruct()
     loc = glimpse_agent.step(map.map.detach().permute(0, 3, 1, 2), random=False)
     logits = glimpse_agent.pi(map.map.detach().permute(0, 3, 1, 2).to(device))
     test_maps_heatmaps.append(F.softmax(logits[0], dim=-1).view(1, ENV_SIZE, ENV_SIZE).detach().cpu())
-    loc = np.clip(loc, 1, 8).astype(np.int64)  # clip to avoid edges
+    loc = np.clip(loc, ATTN_SIZE // 2, ENV_SIZE - 1 - ATTN_SIZE // 2).astype(np.int64)  # clip to avoid edges
     test_locs.append(loc[0].copy())
     attn = loc[range(BATCH_SIZE), :, np.newaxis] + xy  # get all indices in attention window size
     idxs_dim_2 = attn[:, 0, :].flatten()
@@ -114,14 +133,14 @@ for path in model_paths:
         post_write_loss.append(mse(post_write_reconstruction, state_batch[t-1], obs_mask).detach().cpu().numpy())
         test_maps_prestep.append(post_write_reconstruction[0].detach().cpu())
         # step forward the internal map
-        map.step(action_batch[t-1])
+        map.step()
         post_step_reconstruction = map.reconstruct()
         # select next attention spot
         loc = glimpse_agent.step(map.map.detach().permute(0, 3, 1, 2), random=False)
         logits = glimpse_agent.pi(map.map.detach().permute(0, 3, 1, 2).to(device))
         test_maps_heatmaps.append(F.softmax(logits[0], dim=-1).view(1, ENV_SIZE, ENV_SIZE).detach().cpu())
         sigma.append(glimpse_agent.policy.entropy(logits).detach().cpu().numpy())
-        loc = np.clip(loc, 1, 8).astype(np.int64)  # clip to avoid edges
+        loc = np.clip(loc, ATTN_SIZE//2, ENV_SIZE - 1 - ATTN_SIZE//2).astype(np.int64)  # clip to avoid edges
         test_locs.append(loc[0].copy())
         attn = loc[range(BATCH_SIZE), :, np.newaxis] + xy  # get all indices in attention window size
         idxs_dim_0 = np.repeat(np.arange(BATCH_SIZE), ATTN_SIZE * ATTN_SIZE)
@@ -154,7 +173,7 @@ for path in model_paths:
         'post step reconstruction loss': post_step_loss,
         'sigma': sigma,
         'overall_reconstruction_loss': overall_reconstruction_loss,
-    }, os.path.join(env_name, name, 'loss_{}.pt'.format(model_name)))
+    }, os.path.join(model_dir, 'loss_{}.pt'.format(model_name)))
     # save some generated images
     save_example_images(
         [state_batch[t][0].cpu() for t in range(seq_len)],
@@ -162,7 +181,7 @@ for path in model_paths:
         test_maps_prestep,
         test_maps_poststep,
         test_locs,
-        os.path.join(env_name, name, 'predictions_{}.jpeg'.format(model_name)),
+        os.path.join(model_dir, 'predictions_{}.jpeg'.format(model_name)),
         env)
     to_print = "[{}] test loss: {:.3f}".format(model_name, test_loss)
     to_print += ", overall image loss: {:.3f}".format(overall_reconstruction_loss.mean(dim=-1).sum(dim=-1).mean())

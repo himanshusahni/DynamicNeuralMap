@@ -5,14 +5,29 @@ import torch.nn.functional as F
 import numpy as np
 
 
-class MapReconstruction(nn.Module):
+class MapWrite_x_x(nn.Module):
+    """what to write in static and dynamic parts of map"""
+
+    def __init__(self, in_channels, out_channels):
+        super(MapWrite_x_x, self).__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, 3, stride=1, padding=1)
+        self.print_info()
+
+    def print_info(self):
+        print("Initializing write network!")
+        print(self)
+        print("Total conv params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
+
+    def forward(self, x):
+        return F.leaky_relu(self.conv(x), 0.2)
+
+
+class MapReconstruction_x_x(nn.Module):
     """reconstruct entire state from map"""
 
     def __init__(self, in_channels, out_channels):
-        super(MapReconstruction, self).__init__()
+        super(MapReconstruction_x_x, self).__init__()
         # decode the map back to original size
-        self.in_channels = in_channels
-        self.out_channels = out_channels
         self.conv = nn.Conv2d(in_channels, out_channels, 3, stride=1, padding=1)
         self.print_info()
 
@@ -23,6 +38,72 @@ class MapReconstruction(nn.Module):
 
     def forward(self, x):
         return torch.tanh(self.conv(x))
+
+
+class MapWrite_84_21(nn.Module):
+    """what to write in static and dynamic parts of map"""
+
+    def __init__(self, in_channels, out_channels):
+        super(MapWrite_84_21, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, 8, stride=2, padding=3)  # 41x41
+        self.res1 = nn.Conv2d(out_channels, out_channels, 3, stride=1, padding=1)
+        self.res2 = nn.Conv2d(out_channels, out_channels, 3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, 4, stride=2, padding=1)  # 21x21
+        self.res3 = nn.Conv2d(out_channels, out_channels, 3, stride=1, padding=1)
+        self.res4 = nn.Conv2d(out_channels, out_channels, 3, stride=1, padding=1)
+        self.print_info()
+
+    def print_info(self):
+        print("Initializing write network!")
+        print(self)
+        print("Total conv params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
+
+    def forward(self, inp):
+        inp = F.leaky_relu(self.conv1(inp), 0.2)
+        # residual block
+        x1 = F.leaky_relu(self.res1(inp), 0.2)
+        x1 = self.res2(x1)
+        inp = inp + x1
+        inp = F.leaky_relu(self.conv2(inp), 0.2)
+        # residual block
+        x2 = F.leaky_relu(self.res3(inp), 0.2)
+        x2 = self.res4(x2)
+        inp = inp + x2
+        return inp
+
+
+class MapReconstruction_21_84(nn.Module):
+    """reconstruct entire state from map"""
+
+    def __init__(self, in_channels, out_channels):
+        super(MapReconstruction_21_84, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, in_channels, 3, stride=1, padding=1) # 21x21
+        self.res1 = nn.Conv2d(in_channels, in_channels, 3, stride=1, padding=1)
+        self.res2 = nn.Conv2d(in_channels, in_channels, 3, stride=1, padding=1)
+        self.conv2 = nn.ConvTranspose2d(in_channels, in_channels, 4, stride=2, padding=1)  # 42x42
+        self.res3 = nn.Conv2d(in_channels, in_channels, 3, stride=1, padding=1)
+        self.res4 = nn.Conv2d(in_channels, in_channels, 3, stride=1, padding=1)
+        self.conv3 = nn.ConvTranspose2d(in_channels, out_channels, 8, stride=2, padding=3)  # 84x84
+        self.print_info()
+
+    def print_info(self):
+        print("Initializing reconstruction network!")
+        print(self)
+        print("Total conv params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
+
+    def forward(self, inp):
+        inp = F.leaky_relu(self.conv1(inp), 0.2)
+        # residual block
+        x1 = F.leaky_relu(self.res1(inp), 0.2)
+        x1 = self.res2(x1)
+        inp = inp + x1
+        inp = F.leaky_relu(self.conv2(inp), 0.2)
+        # residual block
+        x2 = F.leaky_relu(self.res3(inp), 0.2)
+        x2 = self.res4(x2)
+        inp = inp + x2
+        inp = torch.tanh(self.conv3(inp))
+        return inp
 
 
 class MapStep(nn.Module):
@@ -45,6 +126,31 @@ class MapStep(nn.Module):
         # residual connection
         x = torch.cat((inp, x), dim=1)
         return F.leaky_relu(self.conv2(x), 0.2)
+
+
+class MapStepResidual(nn.Module):
+    """Forward dynamics model for neural attention maps"""
+
+    def __init__(self, in_channels, out_channels):
+        super(MapStepResidual, self).__init__()
+        # convolve
+        self.conv1 = torch.nn.Conv2d(in_channels, in_channels, 5, stride=1, padding=2)
+        self.conv2 = torch.nn.Conv2d(2 * in_channels, in_channels, 5, stride=1, padding=2)
+        self.conv3 = torch.nn.Conv2d(in_channels, out_channels, 5, stride=1, padding=2)
+        self.print_info()
+
+    def print_info(self):
+        print("Initializing step network!")
+        print(self)
+        print("Total conv params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
+
+    def forward(self, inp):
+        x = F.leaky_relu(self.conv1(inp), 0.2)
+        x = torch.cat((x, inp), dim=1)
+        x = F.leaky_relu(self.conv2(x), 0.2)
+        # x = F.leaky_relu(self.conv3(x), 0.2)
+        x = self.conv3(x)
+        return x
 
 
 class MapStepRot(nn.Module):
@@ -75,115 +181,68 @@ class MapStepRot(nn.Module):
         return F.conv2d(x, self.rot_weights)
 
 
-class MapWrite(nn.Module):
-    """what to write in static and dynamic parts of map"""
-
-    def __init__(self, attn_size, in_channels, out_channels):
-        super(MapWrite, self).__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, 3, stride=1, padding=1)
-        self.print_info()
-
-    def print_info(self):
-        print("Initializing write network!")
-        print(self)
-        print("Total conv params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
-
-    def forward(self, x):
-        return F.leaky_relu(self.conv(x), 0.2)
-
-
-class Trunk(nn.Module):
-    """fully connected common trunk for value and policy functions"""
-
-    def __init__(self, input_size, channels):
-        super(Trunk, self).__init__()
-        self.conv1 = nn.Conv2d(channels, 32, 3, stride=2, padding=1)
-        self.conv2 = nn.Conv2d(32, 32, 3, stride=2, padding=1)
-        self.output_size = (32, input_size // 4 + 1, input_size // 4 + 1)
-
-    def forward(self, x):
-        """predict action"""
-        x = F.leaky_relu(self.conv1(x), 0.2)
-        x = F.leaky_relu(self.conv2(x), 0.2)
-        return x.flatten(start_dim=1)
-
-    def print_info(self):
-        print("Initializing trunk of glimpse network!")
-        print(self)
-        print("Total conv params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
-
-
-class FCTrunk(nn.Module):
-    """fully connected common trunk for value and policy functions"""
-
-    def __init__(self, input_size):
-        super(FCTrunk, self).__init__()
-        self.fc1= nn.Linear(input_size, 32)
-        self.fc2 = nn.Linear(32, 32)
-        self.output_size = (32,)
-
-    def forward(self, x):
-        """predict action"""
-        x = F.leaky_relu(self.fc1(x), 0.2)
-        x = F.leaky_relu(self.fc2(x), 0.2)
-        return x
-
-    def print_info(self):
-        print("Initializing trunk of glimpse network!")
-        print(self)
-        print("Total fc params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
-
-
 class ValueFunction(nn.Module):
     """value prediction layer on top of trunk above"""
     def __init__(self, channels, input_size):
         super(ValueFunction, self).__init__()
         self.conv1 = nn.Conv2d(channels, 16, 3, stride=2, padding=1)
         input_size = (input_size + 1) // 2
-        self.conv2 = nn.Conv2d(16, 16, 3, stride=2, padding=1)
+        self.conv2 = nn.Conv2d(16, 8, 3, stride=2, padding=1)
         input_size = (input_size + 1) // 2
-        self.fc1 = nn.Linear(input_size * input_size * 16, 32)
-        self.fc2 = nn.Linear(32, 1)
+        self.conv3 = nn.Conv2d(8, 4, 3, stride=2, padding=1)
+        input_size = (input_size + 1) // 2
+        self.fc1 = nn.Linear(input_size * input_size * 4, 1)
         self.print_info()
 
     def forward(self, x):
         x = F.leaky_relu(self.conv1(x), 0.2)
         x = F.leaky_relu(self.conv2(x), 0.2)
+        x = F.leaky_relu(self.conv3(x), 0.2)
         x = x.flatten(start_dim=1)
-        x = F.leaky_relu(self.fc1(x), 0.2)
-        return self.fc2(x)
+        return self.fc1(x)
 
     def print_info(self):
         print("Initializing value function of glimpse agent!")
         print(self)
         print("Total params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
 
-class FCValueFunction(nn.Module):
-    """value prediction layer on top of trunk above"""
-    def __init__(self, input_size):
-        super(FCValueFunction, self).__init__()
-        self.fc1 = nn.Linear(input_size, 32)
-        self.fc2 = nn.Linear(32, 32)
-        self.fc3 = nn.Linear(32, 1)
 
-    def forward(self, x):
-        x = F.leaky_relu(self.fc1(x), 0.2)
-        x = F.leaky_relu(self.fc2(x), 0.2)
-        return self.fc3(x)
-
-
-class PolicyFunction(nn.Module):
+class PolicyFunction_x_x(nn.Module):
     """policy prediction layer on top of trunk above"""
     def __init__(self, channels):
-        super(PolicyFunction, self).__init__()
+        super(PolicyFunction_x_x, self).__init__()
         self.conv1 = nn.Conv2d(channels, 16, 3, stride=1, padding=1)
-        self.conv2 = nn.Conv2d(16, 16, 3, stride=1, padding=1)
-        self.conv3 = nn.Conv2d(16, 1, 3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(16, 8, 3, stride=1, padding=1)
+        self.conv3 = nn.Conv2d(8, 1, 3, stride=1, padding=1)
         self.print_info()
 
     def forward(self, x):
         x = F.leaky_relu(self.conv1(x), 0.2)
         x = F.leaky_relu(self.conv2(x), 0.2)
+        return self.conv3(x).flatten(start_dim=1)
+
+    def print_info(self):
+        print("Initializing policy function of glimpse agent!")
+        print(self)
+        print("Total params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
+
+
+class PolicyFunction_21_84(nn.Module):
+    """policy prediction layer on top of trunk above"""
+    def __init__(self, channels):
+        super(PolicyFunction_21_84, self).__init__()
+        self.conv1 = nn.Conv2d(channels, 16, 3, stride=1, padding=1) # 21x21
+        self.up1 = nn.Upsample(scale_factor=2, mode='bilinear') # 42x42
+        self.conv2 = nn.Conv2d(16, 8, 3, stride=1, padding=1)
+        self.up2 = nn.Upsample(scale_factor=2, mode='bilinear') # 84x84
+        self.conv3 = nn.Conv2d(8, 1, 3, stride=1, padding=1)
+        self.print_info()
+
+    def forward(self, x):
+        x = F.leaky_relu(self.conv1(x), 0.2)
+        x = self.up1(x)
+        x = F.leaky_relu(self.conv2(x), 0.2)
+        x = self.up2(x)
         return self.conv3(x).flatten(start_dim=1)
 
     def print_info(self):
@@ -204,5 +263,18 @@ class FCPolicyFunction(nn.Module):
     def forward(self, x):
         x = F.leaky_relu(self.fc1(x), 0.2)
         x = F.leaky_relu(self.fc2(x), 0.2)
-        return self.fc3(x), self.fc4(x)
-        # return self.fc3(x)
+        # return self.fc3(x), self.fc4(x)
+        return self.fc3(x)
+
+class FCValueFunction(nn.Module):
+    """value prediction layer on top of trunk above"""
+    def __init__(self, input_size):
+        super(FCValueFunction, self).__init__()
+        self.fc1 = nn.Linear(input_size, 32)
+        self.fc2 = nn.Linear(32, 32)
+        self.fc3 = nn.Linear(32, 1)
+
+    def forward(self, x):
+        x = F.leaky_relu(self.fc1(x), 0.2)
+        x = F.leaky_relu(self.fc2(x), 0.2)
+        return self.fc3(x)

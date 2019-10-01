@@ -71,18 +71,19 @@ class CurriculumDataset(Dataset):
                     str(ep),
                     '{}.pt'.format(idx))
                 imgs.append(torch.load(img_name))
-            actions = torch.load(os.path.join(self.demo_dir, str(ep),'actions.pt'))
-            actions = actions[start_idx:end_idx]
+            # actions = torch.load(os.path.join(self.demo_dir, str(ep),'actions.pt'))
+            # actions = actions[start_idx:end_idx]
         imgs = torch.cat([img.unsqueeze(dim=0) for img in imgs])
-        return {'imgs': imgs, 'actions': actions}
+        return imgs
 
 
 def time_collate(batch):
-    imgs = torch.cat([sample['imgs'].unsqueeze(dim=0) for sample in batch])
+    # imgs = torch.cat([sample['imgs'].unsqueeze(dim=0) for sample in batch])
+    imgs = torch.cat([sample.unsqueeze(dim=0) for sample in batch])
     imgs = imgs.transpose(0, 1)
-    actions = torch.cat([sample['actions'].unsqueeze(dim=0) for sample in batch])
-    actions = actions.transpose(0, 1)
-    return imgs, actions
+    # actions = torch.cat([sample['actions'].unsqueeze(dim=0) for sample in batch])
+    # actions = actions.transpose(0, 1)
+    return imgs
 
 
 class AverageMeter(object):
@@ -131,8 +132,12 @@ def save_one_img(map, path, env, loc=None, size=None, attn_size=None):
 
 def save_example_images(test_batch, heatmap, test_maps_prestep, test_maps_poststep, test_locs, path, env):
     """creates a display friendly visualization of results"""
-    attn_size = 3
-    size = 10
+    # attn_size = 5
+    # size = 16
+    # scale = 40
+    attn_size = 21
+    size = 84
+    scale = 1
     fig, axarr = plt.subplots(len(test_maps_prestep), 4, figsize=(2*4, 2*len(test_maps_prestep)))
     for t in range(len(test_maps_prestep)):
         display_state = env.render(test_batch[t].squeeze().permute(1, 2, 0).numpy())
@@ -140,13 +145,17 @@ def save_example_images(test_batch, heatmap, test_maps_prestep, test_maps_postst
         axarr[t, 0].set_xticks([])
         axarr[t, 0].set_yticks([])
         # now make the attention visible
+        # attention = patches.Rectangle(
+        #     ((test_locs[t][0]-attn_size//2)*scale, (size-1-test_locs[t][1]-attn_size//2)*scale),
+        #     attn_size*scale, attn_size*scale, linewidth=2, edgecolor='y', facecolor='none')
         attention = patches.Rectangle(
-            ((test_locs[t][0]-attn_size//2)*40, (size-1-test_locs[t][1]-attn_size//2)*40),
-            attn_size*40, attn_size*40, linewidth=2, edgecolor='y', facecolor='none')
+            ((test_locs[t][1]-attn_size//2)*scale, (test_locs[t][0]-attn_size//2)*scale),
+            attn_size*scale, attn_size*scale, linewidth=2, edgecolor='y', facecolor='none')
         axarr[t, 0].add_patch(attention)
         # now show heatmap of agent
-        display_heatmap = np.rot90(heatmap[t].squeeze().numpy())
-        axarr[t, 1].imshow(display_heatmap)
+        # display_heatmap = np.rot90(heatmap[t].squeeze().numpy())
+        display_heatmap = heatmap[t].squeeze().numpy()
+        axarr[t, 1].imshow(display_heatmap, interpolation='nearest', cmap='hot')
         axarr[t, 1].set_xticks([])
         axarr[t, 1].set_yticks([])
         display_prestep = env.render(test_maps_prestep[t].permute(1, 2, 0).numpy())

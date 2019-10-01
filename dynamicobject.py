@@ -45,20 +45,20 @@ class DynamicObjects(object):
         # place stationary object
         o_x, o_y = np.random.randint(0, self.size, size=(2,))
         # do not spawn on top of anything else!
-        if np.any(self.map[o_x, o_y]):
+        while np.any(self.map[o_x, o_y]):
             o_x, o_y = np.random.randint(0, self.size, size=(2,))
         self.map[o_x, o_y, 2] = 1  # stationary objects on 2
         # spawn l-r moving objects
         self.lr_x, self.lr_y = np.random.randint(0, self.size, size=(2,))
         # do not spawn on top of anything else!
-        if np.any(self.map[self.lr_x, self.lr_y]):
+        while np.any(self.map[self.lr_x, self.lr_y]):
             self.lr_x, self.lr_y = np.random.randint(0, self.size, size=(2,))
         self.lr_vel = [np.random.choice([-1,1]), 0]
         self.map[self.lr_x, self.lr_y, 1] = self.lr_vel[0]  # lr object on 1
         # spawn u-d moving objects
         self.ud_x, self.ud_y = np.random.randint(0, self.size, size=(2,))
         # do not spawn on top of anything else!
-        if np.any(self.map[self.ud_x, self.ud_y]):
+        while np.any(self.map[self.ud_x, self.ud_y]):
             self.ud_x, self.ud_y = np.random.randint(0, self.size, size=(2,))
         self.ud_vel = [0, np.random.choice([-1,1])]
         self.map[self.ud_x, self.ud_y, 0] = self.ud_vel[1]  # ud object on 0
@@ -163,8 +163,8 @@ class DynamicObjects(object):
 
 
 # # generate trajectories
-# env = DynamicObjects(10)
-# outdir = 'data-DynamicObjects-v0/'
+# env = DynamicObjects(16)
+# outdir = 'data-DynamicObjects-v1/'
 # # import matplotlib.pyplot as plt
 # import torch, os
 # from pytorch_rl.utils import ImgToTensor
@@ -172,7 +172,7 @@ class DynamicObjects(object):
 # d = True
 # ep = -1
 # step = 0
-# for i in range(200000):
+# for i in range(500000):
 #     if d:
 #         s = env.reset()
 #         d = False
@@ -182,6 +182,8 @@ class DynamicObjects(object):
 #         torch.save(torch.FloatTensor([0]*200), os.path.join(outdir, str(ep), 'actions.pt'))
 #     else:
 #         s, r, d, _ = env.step()
+#         # plt.imshow(env.render())
+#         # plt.show()
 #         step += 1
 #     torch.save(preprocess(s), os.path.join(outdir, str(ep), '{}.pt'.format(step)))
 #     if i % 10000 == 0:
