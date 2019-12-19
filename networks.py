@@ -106,6 +106,40 @@ class MapReconstruction_21_84(nn.Module):
         return inp
 
 
+class MapBlend(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(MapBlend, self).__init__()
+        # convolve
+        self.conv1 = torch.nn.Conv2d(in_channels, out_channels, 5, stride=1, padding=1)
+        self.print_info()
+
+    def print_info(self):
+        print("Initializing blend network!")
+        print(self)
+        print("Total conv params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
+
+    def forward(self, inp, map):
+        x = torch.cat((inp, map), dim=1)
+        return F.leaky_relu(self.conv1(x), 0.2)
+
+
+class MapBlendSpatial(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(MapBlendSpatial, self).__init__()
+        # convolve
+        self.conv1 = torch.nn.Conv2d(in_channels, out_channels, 3, stride=1, padding=1)
+        self.print_info()
+
+    def print_info(self):
+        print("Initializing blend network!")
+        print(self)
+        print("Total conv params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
+
+    def forward(self, inp, map):
+        x = torch.cat((inp, map), dim=1)
+        return F.leaky_relu(self.conv1(x), 0.2)
+
+
 class MapStep(nn.Module):
     """Forward dynamics model for neural attention maps"""
 
@@ -153,6 +187,60 @@ class MapStepResidual(nn.Module):
         return x
 
 
+class MapStepResidualConditional(nn.Module):
+    """Forward dynamics model for neural attention maps"""
+
+    def __init__(self, in_channels, out_channels, in_size, nb_actions):
+        super(MapStepResidualConditional, self).__init__()
+        # convolve
+        self.conv1 = torch.nn.Conv2d(in_channels, in_channels, 5, stride=1, padding=2)
+        self.conv2 = torch.nn.Conv2d(2 * in_channels + 8, in_channels, 5, stride=1, padding=2)
+        self.conv3 = torch.nn.Conv2d(in_channels, out_channels, 5, stride=1, padding=2)
+        self.fc1 = torch.nn.Linear(nb_actions, 8)
+        self.print_info()
+
+    def print_info(self):
+        print("Initializing step network!")
+        print(self)
+        print("Total conv params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
+
+    def forward(self, inp, a):
+        x = F.leaky_relu(self.conv1(inp), 0.2)
+        a = F.leaky_relu(self.fc1(a), 0.2)
+        a = a.unsqueeze(2).expand(-1, 8, x.size(2))
+        a = a.unsqueeze(3).expand(-1, 8, x.size(2), x.size(3))
+        x = torch.cat((x, inp, a), dim=1)
+        x = F.leaky_relu(self.conv2(x), 0.2)
+        # x = F.leaky_relu(self.conv3(x), 0.2)
+        x = self.conv3(x)
+        return x
+
+
+class MapStepSpatial(nn.Module):
+    """Forward dynamics model for spatial net memory"""
+
+    def __init__(self, in_channels, out_channels):
+        super(MapStepSpatial, self).__init__()
+        # convolve
+        self.conv1 = torch.nn.Conv2d(in_channels * 2, in_channels, 5, stride=1, padding=2)
+        self.conv2 = torch.nn.Conv2d(in_channels * 2, in_channels, 5, stride=1, padding=2)
+        self.conv3 = torch.nn.Conv2d(in_channels, out_channels, 5, stride=1, padding=2)
+        self.print_info()
+
+    def print_info(self):
+        print("Initializing step network!")
+        print(self)
+        print("Total conv params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
+
+    def forward(self, map, inp):
+        x = torch.cat((map, inp), dim=1)
+        x = F.leaky_relu(self.conv1(x), 0.2)
+        x = torch.cat((x, map), dim=1)
+        x = F.leaky_relu(self.conv2(x), 0.2)
+        x = F.leaky_relu(self.conv3(x), 0.2)
+        return x
+
+
 class MapStepRot(nn.Module):
     """Forward dynamics model for neural attention maps"""
 
@@ -184,7 +272,7 @@ class MapStepRot(nn.Module):
 class ValueFunction(nn.Module):
     """value prediction layer on top of trunk above"""
     def __init__(self, channels, input_size):
-        super(ValueFunction, self).__init__()
+        super().__init__()
         self.conv1 = nn.Conv2d(channels, 16, 3, stride=2, padding=1)
         input_size = (input_size + 1) // 2
         self.conv2 = nn.Conv2d(16, 8, 3, stride=2, padding=1)
@@ -202,7 +290,109 @@ class ValueFunction(nn.Module):
         return self.fc1(x)
 
     def print_info(self):
-        print("Initializing value function of glimpse agent!")
+        print(self)
+        print("Total params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
+
+
+class ConvTrunk(nn.Module):
+
+    def __init__(self, state_shape):
+        super().__init__()
+        channels = state_shape[0]
+        input_size = state_shape[1]
+        self.conv1 = nn.Conv2d(channels, 16, 3, stride=2, padding=1)
+        input_size = (input_size + 1) // 2
+        self.conv2 = nn.Conv2d(16, 32, 3, stride=2, padding=1)
+        input_size = (input_size + 1) // 2
+        self.conv3 = nn.Conv2d(32, 64, 3, stride=2, padding=1)
+        input_size = (input_size + 1) // 2
+        self.output_size = input_size * input_size * 64
+
+    def forward(self, x):
+        x = F.leaky_relu(self.conv1(x), 0.2)
+        x = F.leaky_relu(self.conv2(x), 0.2)
+        x = F.leaky_relu(self.conv3(x), 0.2)
+        return x.flatten(start_dim=1)
+
+    def print_info(self):
+        print(self)
+        print("Total params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
+
+
+class ConvTrunk3(nn.Module):
+
+    def __init__(self, state_shape):
+        super().__init__()
+        channels = state_shape[0]
+        input_size = state_shape[1]
+        self.conv1 = nn.Conv2d(channels, 64, 4, stride=2, padding=2)
+        input_size = np.ceil(input_size/2)
+        self.conv2 = nn.Conv2d(64, 64, 3, stride=1, padding=1)
+        input_size = np.ceil(input_size/1)
+        self.print_info()
+
+        self.output_size = int(input_size * input_size * 64)
+
+    def forward(self, x):
+        x = F.leaky_relu(self.conv1(x), 0.2)
+        x = F.leaky_relu(self.conv2(x), 0.2)
+        return x.flatten(start_dim=1)
+
+    def print_info(self):
+        print(self)
+        print("Total params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
+
+
+class ConvTrunk2(nn.Module):
+
+    def __init__(self, state_shape):
+        super().__init__()
+        channels = state_shape[0]
+        input_size = state_shape[1]
+        self.conv1 = nn.Conv2d(channels, 32, 8, stride=4, padding=2)
+        input_size = np.ceil(input_size/4)
+        self.conv2 = nn.Conv2d(32, 64, 4, stride=2, padding=2)
+        input_size = np.ceil(input_size/2)
+        self.conv3 = nn.Conv2d(64, 64, 3, stride=1, padding=1)
+        input_size = np.ceil(input_size/1)
+        self.print_info()
+
+        self.output_size = int(input_size * input_size * 64)
+
+    def forward(self, x):
+        x = F.leaky_relu(self.conv1(x), 0.2)
+        x = F.leaky_relu(self.conv2(x), 0.2)
+        x = F.leaky_relu(self.conv3(x), 0.2)
+        return x.flatten(start_dim=1)
+
+    def print_info(self):
+        print(self)
+        print("Total params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
+
+
+class PolicyFunction(nn.Module):
+    def __init__(self, observation_space, action_space):
+        super().__init__()
+        channels = observation_space.shape[2]
+        input_size = observation_space.shape[0]
+        nb_actions = action_space.n
+        self.conv1 = nn.Conv2d(channels, 16, 3, stride=2, padding=1)
+        input_size = (input_size + 1) // 2
+        self.conv2 = nn.Conv2d(16, 8, 3, stride=2, padding=1)
+        input_size = (input_size + 1) // 2
+        self.conv3 = nn.Conv2d(8, 4, 3, stride=2, padding=1)
+        input_size = (input_size + 1) // 2
+        self.fc1 = nn.Linear(input_size * input_size * 4, nb_actions)
+        self.print_info()
+
+    def forward(self, x):
+        x = F.leaky_relu(self.conv1(x), 0.2)
+        x = F.leaky_relu(self.conv2(x), 0.2)
+        x = F.leaky_relu(self.conv3(x), 0.2)
+        x = x.flatten(start_dim=1)
+        return self.fc1(x)
+
+    def print_info(self):
         print(self)
         print("Total params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
 
@@ -249,6 +439,44 @@ class PolicyFunction_21_84(nn.Module):
         print("Initializing policy function of glimpse agent!")
         print(self)
         print("Total params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
+
+
+class ActorCritic_21_84(nn.Module):
+    """actor critic container for separate 21_84 policy network and
+    value network"""
+    def __init__(self, trunk_arch, observation_space, action_space):
+        super().__init__()
+        self.policy_head = PolicyFunction_21_84(observation_space[0])
+        self.value_head = ValueFunction(channels=observation_space[0], input_size=observation_space[1])
+
+    def print_info(self):
+        self.policy_head.print_info()
+        self.value_head.print_info()
+
+    def parameters(self, recurse=True):
+        return list(self.policy_head.parameters()) + \
+               list(self.value_head.parameters())
+
+    def V_parameters(self, recurse=True):
+        return list(self.value_head.parameters())
+
+    def pi_parameters(self, recurse=True):
+        return list(self.policy_head.parameters())
+
+    def forward(self, x):
+        return self.policy_head(x), self.value_head(x)
+
+    def V(self, x):
+        """only return values"""
+        return self.value_head(x)
+
+    def pi(self, x):
+        """only return policy logits"""
+        return self.policy_head(x)
+
+    def to(self, device):
+        self.policy_head.to(device)
+        self.value_head.to(device)
 
 
 class FCPolicyFunction(nn.Module):

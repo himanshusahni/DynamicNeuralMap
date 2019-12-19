@@ -1,7 +1,7 @@
 import os
 import numpy as np
-import matplotlib
-matplotlib.use('Agg')
+# import matplotlib
+# matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import matplotlib.gridspec as gridspec
@@ -217,19 +217,3 @@ class MinImposedMSEMasked(object):
         mask = mask.view(mask.size(0), -1)
         return loss.sum(dim=1)/mask.sum(dim=1)
 
-
-class AsyncSlicer:
-    def __init__(self, img, loc, glimpse, size):
-        self.img = img  # shared memory object into which state will be copied
-        self.loc = loc  # shared memory object telling slice location
-        self.glimpse = glimpse  # shared memory object of output
-        self.size = size  # size of sliced window
-
-
-    def slice_async(self, startq, stopq):
-        while True:
-            i = startq.get()  # batch #
-            self.glimpse[i] = self.img[
-                              i, :, (self.loc[i,0]-self.size//2):(self.loc[i,0]+self.size//2+1),
-                              (self.loc[i,1]-self.size//2):(self.loc[i,1]+self.size//2+1)]
-            stopq.put(i)

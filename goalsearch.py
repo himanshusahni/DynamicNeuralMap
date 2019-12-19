@@ -52,6 +52,11 @@ class GoalSearchEnv(object):
         """return observation under current attention"""
         # return self.map[(self.attention_x - self.attention_size//2):(self.attention_x + 1 + self.attention_size//2),
         #        (self.attention_y - self.attention_size//2):(self.attention_y + 1 + self.attention_size//2), :]
+        # only show goal on even steps
+        if self.ep_step % 2 == 0:
+            self.map[1, self.size-1, self.goal] = 1
+        else:
+            self.map[1, self.size - 1, self.goal] = 0
         return self.map
 
     def render(self, map=None):
