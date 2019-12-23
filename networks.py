@@ -110,7 +110,7 @@ class MapBlend(nn.Module):
     def __init__(self, in_channels, out_channels):
         super(MapBlend, self).__init__()
         # convolve
-        self.conv1 = torch.nn.Conv2d(in_channels, out_channels, 5, stride=1, padding=1)
+        self.conv1 = torch.nn.Conv2d(in_channels, out_channels, 5, stride=1, padding=2)
         self.print_info()
 
     def print_info(self):
@@ -182,8 +182,8 @@ class MapStepResidual(nn.Module):
         x = F.leaky_relu(self.conv1(inp), 0.2)
         x = torch.cat((x, inp), dim=1)
         x = F.leaky_relu(self.conv2(x), 0.2)
-        # x = F.leaky_relu(self.conv3(x), 0.2)
-        x = self.conv3(x)
+        x = F.leaky_relu(self.conv3(x), 0.2)
+        # x = self.conv3(x)
         return x
 
 

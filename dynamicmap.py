@@ -27,10 +27,13 @@ class DynamicMap():
         # elif env_size == 84 and size == 84:
         #     self.write_model = MapWrite_84_84(in_channels=env_channels, out_channels=channels)
         #     self.reconstruction_model = MapReconstruction_84_84(in_channels=channels, out_channels=env_channels)
+        # output of write is blended with existing map
+        self.write_blend_model = MapBlend(in_channels=channels*2, out_channels=channels)
         self.step_model = MapStepResidual(in_channels=channels, out_channels=channels//2)
 
     def to(self, device):
         self.write_model.to(device)
+        self.write_blend_model.to(device)
         self.step_model.to(device)
         self.reconstruction_model.to(device)
 
@@ -65,21 +68,20 @@ class DynamicMap():
         minus_map_mask = minus_map_mask.detach()
         return map_mask, minus_map_mask
 
-    def write(self, glimpse, obs_mask, minus_obs_mask):
+    def write(self, glimpse):
         """
         stores an incoming glimpse into the memory map
         :param glimpse: a (batchsize, *attention_dims) input to be stored in memory
         :param attn: indices of above glimpse in map coordinates (where to write)
         """
         # what to write
+        # self.obs = self.write_model(glimpse)
+
         w = self.write_model(glimpse)
-        # write
-        map_mask, minus_map_mask = self.MaskObs2Map(obs_mask, minus_obs_mask)
-        w *= map_mask
-        # map_clone = self.map.clone()
-        # map_clone = map_clone * minus_map_mask + w
-        # post_write_reconstruction = self.reconstruction_model(map_clone)
-        self.map = self.map * minus_map_mask + w
+
+        w = self.write_blend_model(w, self.map.clone())
+        self.map = w
+
         # returns a cost of writing
         # return w.abs().mean(), post_write_reconstruction
         return w.abs().mean()
@@ -91,7 +93,8 @@ class DynamicMap():
         # only dynamic part of map is stepped, the whole map is provided as input
         dynamic = self.step_model(self.map)
         new_map = self.map.clone()
-        new_map[:, self.channels//2:, :, :] = self.map[:, self.channels//2:, :, :] + dynamic
+        # new_map[:, self.channels//2:, :, :] = self.map[:, self.channels//2:, :, :] + dynamic
+        new_map[:, self.channels//2:, :, :] = dynamic
         self.map = new_map
         # self.allmaps.append(self.map)
         return dynamic.abs().mean()
@@ -119,7 +122,8 @@ class DynamicMap():
         return list(reversed(reconstructions))
 
     def parameters(self):
-        return list(self.write_model.parameters()) +\
+        return list(self.write_model.parameters()) + \
+               list(self.write_blend_model.parameters()) + \
                list(self.step_model.parameters()) + \
                list(self.reconstruction_model.parameters())
 
@@ -127,6 +131,7 @@ class DynamicMap():
     def save(self, path):
         torch.save({
             'write': self.write_model,
+            'writeblend': self.write_blend_model,
             'step': self.step_model,
             'reconstruct': self.reconstruction_model
         }, path)
@@ -135,6 +140,7 @@ class DynamicMap():
         models = torch.load(path, map_location='cpu')
         self.write_model = models['write']
         self.step_model = models['step']
+        self.write_blend_model = models['writeblend']
         self.reconstruction_model = models['reconstruct']
 
 
@@ -167,71 +173,6 @@ class ConditionalDynamicMap(DynamicMap):
         self.map = new_map
         # self.allmaps.append(self.map)
         return dynamic.abs().mean()
-
-
-class BlendDNM(DynamicMap):
-
-    def __init__(self, size, channels, env_size, env_channels, batchsize, device):
-        super().__init__(size, channels, env_size, env_channels, batchsize, device)
-        self.reconstruction_blend = MapBlendSpatial(in_channels=channels * 2, out_channels=channels)
-
-    def to(self, device):
-        super().to(device)
-        self.reconstruction_blend.to(device)
-
-    def reset(self):
-        """
-        reset the map to beginning of episode
-        """
-        super().reset()
-        self.obs = torch.zeros((self.batchsize, self.channels, self.size, self.size)).to(self.device)
-        self.allobs = [self.obs,]
-
-    def write(self, glimpse, obs_mask, minus_obs_mask):
-        """
-        stores an incoming glimpse into the memory map
-        :param glimpse: a (batchsize, *attention_dims) input to be stored in memory
-        :param attn: indices of above glimpse in map coordinates (where to write)
-        """
-        # what to write
-        w = self.write_model(glimpse)
-        self.obs = w.clone()
-        self.allobs.append(self.obs)
-        # blend together the old dynamic info and the new dynamic info
-        w[:, self.channels//2:, :, :] = self.blend_model(w[:, self.channels//2:, :, :], self.map[:, self.channels//2:, :, :])
-        # write
-        map_mask, minus_map_mask = self.MaskObs2Map(obs_mask, minus_obs_mask)
-        w *= map_mask
-        self.map = self.map * minus_map_mask + w
-        # returns a cost of writing
-        return w.abs().mean()
-
-    def reconstruct(self):
-        """
-        attempt to reconstruct the entire state image using current map
-        """
-        blend = self.reconstruction_blend(self.map, self.obs)
-        return self.reconstruction_model(blend)
-
-    def parameters(self):
-        return super().parameters() + list(self.reconstruction_blend.parameters())
-
-    def save(self, path):
-        torch.save({
-            'write': self.write_model,
-            'step': self.step_model,
-            'blend': self.blend_model,
-            'reconstruct': self.reconstruction_model,
-            'reconstruct_blend': self.reconstruction_blend
-        }, path)
-
-    def load(self, path):
-        models = torch.load(path, map_location='cpu')
-        self.write_model = models['write']
-        self.step_model = models['step']
-        self.blend_model = models['blend']
-        self.reconstruction_model = models['reconstruct']
-        self.reconstruction_blend = models['reconstruct_blend']
 
 
 class DNMNoMask(DynamicMap):

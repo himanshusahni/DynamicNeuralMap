@@ -148,10 +148,10 @@ def save_example_images(test_batch, heatmap, test_maps_prestep, test_maps_postst
         # attention = patches.Rectangle(
         #     ((test_locs[t][0]-attn_size//2)*scale, (size-1-test_locs[t][1]-attn_size//2)*scale),
         #     attn_size*scale, attn_size*scale, linewidth=2, edgecolor='y', facecolor='none')
-        attention = patches.Rectangle(
-            ((test_locs[t][1]-attn_size//2)*scale, (test_locs[t][0]-attn_size//2)*scale),
-            attn_size*scale, attn_size*scale, linewidth=2, edgecolor='y', facecolor='none')
-        axarr[t, 0].add_patch(attention)
+        # attention = patches.Rectangle(
+        #     ((test_locs[t][1]-attn_size//2)*scale, (test_locs[t][0]-attn_size//2)*scale),
+        #     attn_size*scale, attn_size*scale, linewidth=2, edgecolor='y', facecolor='none')
+        # axarr[t, 0].add_patch(attention)
         # now show heatmap of agent
         # display_heatmap = np.rot90(heatmap[t].squeeze().numpy())
         display_heatmap = heatmap[t].squeeze().numpy()
