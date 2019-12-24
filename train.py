@@ -51,7 +51,7 @@ train_loader = DataLoader(dataset, batch_size=BATCH_SIZE,
                           drop_last=True, pin_memory=True)
 
 # gpu?
-device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 print("will run on {} device!".format(device))
 
 # initialize map
@@ -144,9 +144,9 @@ for epoch in range(10000):
             overall_reconstruction_loss += mse_unmasked(state_batch[t], post_step_reconstruction).item()
             glimpse_agent.reward(post_step_loss.detach())
             post_step_loss = post_step_loss.mean()
-            # post_step_reconstruction = post_step_reconstruction * minus_obs_mask + state_batch[t-1] * obs_mask
             # write new observation to map
-            obs = state_batch[t] * obs_mask
+            # obs = state_batch[t] * obs_mask
+            obs = state_batch[t] * obs_mask + post_step_reconstruction.detach() * minus_obs_mask
             # write_cost, post_write_reconstruction = map.write(obs, obs_mask, minus_obs_mask)
             write_cost = map.write(obs, obs_mask, minus_obs_mask)
             # post-write reconstruction loss
@@ -157,7 +157,8 @@ for epoch in range(10000):
             # step_cost = map.step(F.softmax(torch.rand(BATCH_SIZE, 4), dim=0).to(device))
             post_step_reconstruction = map.reconstruct()
             # add up all losses
-            loss += 0.01 * (write_cost + step_cost) + post_write_loss + post_step_loss
+            # loss += 0.01 * (write_cost + step_cost) + post_write_loss + post_step_loss
+            loss += 0.01 * (write_cost + step_cost) + post_step_loss
             # write_loss += 0.01 * (write_cost) + post_write_loss
             # step_loss += 0.01 * (step_cost) + post_step_loss
             # loss += 0.01 * step_cost + post_step_loss
@@ -199,7 +200,7 @@ for epoch in range(10000):
             print(to_print)
             start = time.time()
         if i_batch % 1000 == 0:
-            agentsavepath = os.path.join('/home/himanshu/experiments/DynamicNeuralMap', env_name, '21map_DMM_tryingtogobacktowhatwasworking')
+            agentsavepath = os.path.join('/home/himanshu/experiments/DynamicNeuralMap', env_name, '21map_DMM_reconstructionpaste')
             print('saving network weights to {} ...'.format(agentsavepath))
             map.save(os.path.join(agentsavepath, 'map{}.pth'.format(i_batch)))
             # glimpse_net = glimpse_agent.ppo.actor_critic

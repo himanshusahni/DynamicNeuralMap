@@ -27,10 +27,15 @@ class DynamicMap():
         # elif env_size == 84 and size == 84:
         #     self.write_model = MapWrite_84_84(in_channels=env_channels, out_channels=channels)
         #     self.reconstruction_model = MapReconstruction_84_84(in_channels=channels, out_channels=env_channels)
+
+        # self.blend_model = MapBlend(in_channels=channels, out_channels=channels//2)
+        self.blend_model = MapBlend(in_channels=channels*2, out_channels=channels)
+
         self.step_model = MapStepResidual(in_channels=channels, out_channels=channels//2)
 
     def to(self, device):
         self.write_model.to(device)
+        self.blend_model.to(device)
         self.step_model.to(device)
         self.reconstruction_model.to(device)
 
@@ -73,13 +78,21 @@ class DynamicMap():
         """
         # what to write
         w = self.write_model(glimpse)
+
+        # w_c = w.clone()
+        # w_c[:, self.channels//2:, :, :] = self.blend_model(w[:, self.channels//2:, :, :], self.map[:, self.channels//2:, :, :])
+        # w = w_c
+        w = self.blend_model(w, self.map.clone())
+
         # write
         map_mask, minus_map_mask = self.MaskObs2Map(obs_mask, minus_obs_mask)
         w *= map_mask
+        self.map = self.map * minus_map_mask + w
+        # self.map = w
+
         # map_clone = self.map.clone()
         # map_clone = map_clone * minus_map_mask + w
         # post_write_reconstruction = self.reconstruction_model(map_clone)
-        self.map = self.map * minus_map_mask + w
         # returns a cost of writing
         # return w.abs().mean(), post_write_reconstruction
         return w.abs().mean()
@@ -91,7 +104,7 @@ class DynamicMap():
         # only dynamic part of map is stepped, the whole map is provided as input
         dynamic = self.step_model(self.map)
         new_map = self.map.clone()
-        new_map[:, self.channels//2:, :, :] = self.map[:, self.channels//2:, :, :] + dynamic
+        new_map[:, self.channels//2:, :, :] = dynamic
         self.map = new_map
         # self.allmaps.append(self.map)
         return dynamic.abs().mean()
@@ -119,7 +132,8 @@ class DynamicMap():
         return list(reversed(reconstructions))
 
     def parameters(self):
-        return list(self.write_model.parameters()) +\
+        return list(self.write_model.parameters()) + \
+               list(self.blend_model.parameters()) + \
                list(self.step_model.parameters()) + \
                list(self.reconstruction_model.parameters())
 
@@ -127,6 +141,7 @@ class DynamicMap():
     def save(self, path):
         torch.save({
             'write': self.write_model,
+            'blend': self.blend_model,
             'step': self.step_model,
             'reconstruct': self.reconstruction_model
         }, path)
@@ -134,6 +149,7 @@ class DynamicMap():
     def load(self, path):
         models = torch.load(path, map_location='cpu')
         self.write_model = models['write']
+        self.blend_model = models['blend']
         self.step_model = models['step']
         self.reconstruction_model = models['reconstruct']
 
