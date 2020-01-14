@@ -535,23 +535,23 @@ class DMMAgent():
         #           25: 0.9}
         # self.glimpse_agent.a2c.gamma = gammas[seqlen]
         samples_added = 0
-        metrics = {'agent/policy_loss': AverageMeter(),
-                   'agent/val_loss': AverageMeter(),
-                   'agent/policy_entropy': AverageMeter(),
-                   'agent/avg_val': AverageMeter(),
-                   'agent/avg_reward': AverageMeter(),
-                   'agent/avg_ep_len': AverageMeter(),
-                   'glimpse/policy_loss': AverageMeter(),
-                   'glimpse/val_loss': AverageMeter(),
-                   'glimpse/policy_entropy': AverageMeter(),
-                   'glimpse/avg_val': AverageMeter(),
-                   'glimpse/avg_reward': AverageMeter(),
-                   'map/write cost': AverageMeter(),
-                   'map/step cost': AverageMeter(),
-                   'map/post write': AverageMeter(),
-                   'map/post step': AverageMeter(),
-                   'map/overall': AverageMeter(),
-                   'map/done_skips': AverageMeter(),
+        metrics = {'agent/policy_loss': AverageMeter(history=10),
+                   'agent/val_loss': AverageMeter(history=10),
+                   'agent/policy_entropy': AverageMeter(history=10),
+                   'agent/avg_val': AverageMeter(history=10),
+                   'agent/avg_reward': AverageMeter(history=10),
+                   'agent/avg_ep_len': AverageMeter(history=10),
+                   'glimpse/policy_loss': AverageMeter(history=10 * self.nb_dmm_updates),
+                   'glimpse/val_loss': AverageMeter(history=10 * self.nb_dmm_updates),
+                   'glimpse/policy_entropy': AverageMeter(history=10 * self.nb_dmm_updates),
+                   'glimpse/avg_val': AverageMeter(history=10 * self.nb_dmm_updates),
+                   'glimpse/avg_reward': AverageMeter(history=10 * self.nb_dmm_updates),
+                   'map/write cost': AverageMeter(history=10 * self.nb_dmm_updates),
+                   'map/step cost': AverageMeter(history=10 * self.nb_dmm_updates),
+                   'map/post write': AverageMeter(history=10 * self.nb_dmm_updates),
+                   'map/post step': AverageMeter(history=10 * self.nb_dmm_updates),
+                   'map/overall': AverageMeter(history=10 * self.nb_dmm_updates),
+                   'map/done_skips': AverageMeter(history=10 * self.nb_dmm_updates),
                    }
         while step < self.max_train_steps:
             # start collecting data
@@ -571,7 +571,7 @@ class DMMAgent():
                     rollout['dones']), rollout['states'][:,-1], metrics, scope='agent')
             metrics['agent/avg_ep_len'].update(rollout['avg_ep_len'].mean().item())
             # update DMM!
-            if rollout['avg_ep_len'].mean().item() > 2 * seqlen:
+            if metrics['agent/avg_ep_len'].avg > 2 * seqlen:
                 if seqlen < maxseqlen:
                     seqlen += 1
                     print("Increasing sequence length to {}".format(seqlen))
@@ -579,6 +579,7 @@ class DMMAgent():
             for _ in range(self.nb_dmm_updates):
                 glimpses, masks, glimpse_actions, actions, rewards = \
                     self.create_batch(buffer, samples_added, seqlen, metrics)
+                self.optimizer.zero_grad()
                 loss = self.map.lossbatch(
                     glimpses,
                     actions,

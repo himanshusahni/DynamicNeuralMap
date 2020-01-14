@@ -160,11 +160,11 @@ class DynamicMap():
             total_post_write_loss += post_write_loss.item()
             total_post_step_loss += post_step_loss.item()
         # update the training metrics
-        training_metrics['map/write cost'].update(total_write_loss)
-        training_metrics['map/step cost'].update(total_step_loss)
-        training_metrics['map/post write'].update(total_post_write_loss)
-        training_metrics['map/post step'].update(total_post_step_loss)
-        training_metrics['map/overall'].update(overall_reconstruction_loss)
+        training_metrics['map/write cost'].update(total_write_loss / seq_len)
+        training_metrics['map/step cost'].update(total_step_loss / seq_len)
+        training_metrics['map/post write'].update(total_post_write_loss / seq_len)
+        training_metrics['map/post step'].update(total_post_step_loss / seq_len)
+        training_metrics['map/overall'].update(overall_reconstruction_loss / seq_len)
         return loss
 
     def to(self, device):
