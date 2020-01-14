@@ -189,13 +189,13 @@ class MapStepResidual(nn.Module):
 class MapStepResidualConditional(nn.Module):
     """Forward dynamics model for neural attention maps"""
 
-    def __init__(self, in_channels, out_channels, in_size, nb_actions):
+    def __init__(self, in_channels, out_channels, nb_actions):
         super(MapStepResidualConditional, self).__init__()
         # convolve
-        self.conv1 = torch.nn.Conv2d(in_channels, in_channels, 5, stride=1, padding=2)
-        self.conv2 = torch.nn.Conv2d(2 * in_channels + 8, in_channels, 5, stride=1, padding=2)
+        self.conv1 = torch.nn.Conv2d(in_channels + 4, in_channels, 5, stride=1, padding=2)
+        self.conv2 = torch.nn.Conv2d(2 * in_channels, in_channels, 5, stride=1, padding=2)
         self.conv3 = torch.nn.Conv2d(in_channels, out_channels, 5, stride=1, padding=2)
-        self.fc1 = torch.nn.Linear(nb_actions, 8)
+        self.nb_actions = nb_actions
         self.print_info()
 
     def print_info(self):
@@ -204,14 +204,13 @@ class MapStepResidualConditional(nn.Module):
         print("Total conv params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
 
     def forward(self, inp, a):
-        x = F.leaky_relu(self.conv1(inp), 0.2)
-        a = F.leaky_relu(self.fc1(a), 0.2)
-        a = a.unsqueeze(2).expand(-1, 8, x.size(2))
-        a = a.unsqueeze(3).expand(-1, 8, x.size(2), x.size(3))
-        x = torch.cat((x, inp, a), dim=1)
+        a = a.unsqueeze(2).expand(-1, self.nb_actions, inp.size(2))
+        a = a.unsqueeze(3).expand(-1, self.nb_actions, inp.size(2), inp.size(3))
+        x = torch.cat((inp, a), dim=1)
+        x = F.leaky_relu(self.conv1(x), 0.2)
+        x = torch.cat((inp, x), dim=1)
         x = F.leaky_relu(self.conv2(x), 0.2)
-        # x = F.leaky_relu(self.conv3(x), 0.2)
-        x = self.conv3(x)
+        x = F.leaky_relu(self.conv3(x), 0.2)
         return x
 
 

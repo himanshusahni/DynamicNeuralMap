@@ -8,14 +8,15 @@ from pytorch_rl import policies
 from pytorch_rl.utils import ImgToTensor
 
 from networks import *
-from utils import MSEMasked, AverageMeter
+from utils import MSEMasked
 
 
 class DynamicMap():
-    def __init__(self, size, channels, env_size, env_channels, batchsize, device):
+    def __init__(self, size, channels, env_size, env_channels, batchsize, device, nb_actions=None):
         self.size = size
         self.channels = channels
         self.env_size = env_size
+        self.env_channels = env_channels
         self.batchsize = batchsize
         self.device = device
         if env_size == 10 and size == 10:
@@ -27,24 +28,18 @@ class DynamicMap():
         # elif env_size == 84 and size == 84:
         #     self.write_model = MapWrite_84_84(in_channels=env_channels, out_channels=channels)
         #     self.reconstruction_model = MapReconstruction_84_84(in_channels=channels, out_channels=env_channels)
-
-        # self.blend_model = MapBlend(in_channels=channels, out_channels=channels//2)
         self.blend_model = MapBlend(in_channels=channels*2, out_channels=channels)
-
-        self.step_model = MapStepResidual(in_channels=channels, out_channels=channels//2)
-
-    def to(self, device):
-        self.write_model.to(device)
-        self.blend_model.to(device)
-        self.step_model.to(device)
-        self.reconstruction_model.to(device)
+        if nb_actions is None:
+            self.step_model = MapStepResidual(in_channels=channels, out_channels=channels//2)
+        else:
+            self.step_model = MapStepResidual(in_channels=channels, out_channels=channels//3)
+            self.agent_step_model = MapStepResidualConditional(channels, channels//3, nb_actions)
 
     def reset(self):
         """
         reset the map to beginning of episode
         """
         self.map = torch.zeros((self.batchsize, self.channels, self.size, self.size)).to(self.device)
-        # self.allmaps = [self.map,]
 
     def detach(self):
         """
@@ -52,7 +47,7 @@ class DynamicMap():
         """
         self.map = self.map.detach()
 
-    def MaskObs2Map(self, mask, minus_mask):
+    def maskobs2maskmap(self, mask, minus_mask):
         '''
         converts an observation mask to one of size of map
         '''
@@ -78,36 +73,33 @@ class DynamicMap():
         """
         # what to write
         w = self.write_model(glimpse)
-
-        # w_c = w.clone()
-        # w_c[:, self.channels//2:, :, :] = self.blend_model(w[:, self.channels//2:, :, :], self.map[:, self.channels//2:, :, :])
-        # w = w_c
         w = self.blend_model(w, self.map.clone())
 
         # write
-        map_mask, minus_map_mask = self.MaskObs2Map(obs_mask, minus_obs_mask)
+        map_mask, minus_map_mask = self.maskobs2maskmap(obs_mask, minus_obs_mask)
         w *= map_mask
         self.map = self.map * minus_map_mask + w
-        # self.map = w
 
-        # map_clone = self.map.clone()
-        # map_clone = map_clone * minus_map_mask + w
-        # post_write_reconstruction = self.reconstruction_model(map_clone)
-        # returns a cost of writing
-        # return w.abs().mean(), post_write_reconstruction
+        # cost of writing
         return w.abs().mean()
 
-    def step(self):
+    def step(self, action=None):
         """
         uses the model to advance the map by a step
         """
-        # only dynamic part of map is stepped, the whole map is provided as input
+        # only dynamic part of map is affected
         dynamic = self.step_model(self.map)
+        cost = dynamic.abs().mean()
         new_map = self.map.clone()
-        new_map[:, self.channels//2:, :, :] = dynamic
+        if action is None:
+            new_map[:, self.channels // 2:, :, :] = dynamic
+        else:
+            agent_dynamic = self.agent_step_model(self.map, action)
+            cost += agent_dynamic.abs().mean()
+            new_map[:, self.channels//3:2*self.channels//3, :, :] = dynamic
+            new_map[:, 2*self.channels//3:, :, :] = agent_dynamic
         self.map = new_map
-        # self.allmaps.append(self.map)
-        return dynamic.abs().mean()
+        return cost
 
     def reconstruct(self):
         """
@@ -115,156 +107,109 @@ class DynamicMap():
         """
         return self.reconstruction_model(self.map)
 
-    def reconstruct_all(self):
-        """
-        attempt to reconstruct the current state image using maps from previous time steps
-        """
-        reconstructions = []
-        for i, m in enumerate(reversed(self.allmaps)):
-            if i > 6:
-                break
-            for j in range(i):
-                dynamic = self.step_model(m)
-                new_map = m.clone()
-                new_map[:, self.channels//2:, :, :] = m[:, self.channels//2:, :, :] + dynamic
-                m = new_map
-            reconstructions.append(self.reconstruction_model(m))
-        return list(reversed(reconstructions))
-
-    def parameters(self):
-        return list(self.write_model.parameters()) + \
-               list(self.blend_model.parameters()) + \
-               list(self.step_model.parameters()) + \
-               list(self.reconstruction_model.parameters())
-
-
-    def save(self, path):
-        torch.save({
-            'write': self.write_model,
-            'blend': self.blend_model,
-            'step': self.step_model,
-            'reconstruct': self.reconstruction_model
-        }, path)
-
-    def load(self, path):
-        models = torch.load(path, map_location='cpu')
-        self.write_model = models['write']
-        self.blend_model = models['blend']
-        self.step_model = models['step']
-        self.reconstruction_model = models['reconstruct']
-
-
-class ConditionalDynamicMap(DynamicMap):
-    def __init__(self, size, channels, env_size, env_channels, nb_actions, batchsize, device):
-        self.size = size
-        self.channels = channels
-        self.env_size = env_size
-        self.batchsize = batchsize
-        self.device = device
-        if env_size == 10 and size == 10:
-            self.write_model = MapWrite_x_x(in_channels=env_channels, out_channels=channels)
-            self.reconstruction_model = MapReconstruction_x_x(in_channels=channels, out_channels=env_channels)
-        elif env_size == 84 and size == 21:
-            self.write_model = MapWrite_84_21(in_channels=env_channels, out_channels=channels)
-            self.reconstruction_model = MapReconstruction_21_84(in_channels=channels, out_channels=env_channels)
-        # elif env_size == 84 and size == 84:
-        #     self.write_model = MapWrite_84_84(in_channels=env_channels, out_channels=channels)
-        #     self.reconstruction_model = MapReconstruction_84_84(in_channels=channels, out_channels=env_channels)
-        self.step_model = MapStepResidualConditional(in_channels=channels, out_channels=channels//2, in_size=size, nb_actions=nb_actions)
-
-    def step(self, a):
-        """
-        uses the model to advance the map by a step
-        """
-        # only dynamic part of map is stepped, the whole map is provided as input
-        dynamic = self.step_model(self.map, a)
-        new_map = self.map.clone()
-        new_map[:, self.channels//2:, :, :] = self.map[:, self.channels//2:, :, :] + dynamic
-        self.map = new_map
-        # self.allmaps.append(self.map)
-        return dynamic.abs().mean()
-
-
-class BlendDNM(DynamicMap):
-
-    def __init__(self, size, channels, env_size, env_channels, batchsize, device):
-        super().__init__(size, channels, env_size, env_channels, batchsize, device)
-        self.reconstruction_blend = MapBlendSpatial(in_channels=channels * 2, out_channels=channels)
+    def lossbatch(self, state_batch, action_batch, reward_batch,
+                  glimpse_agent, training_metrics,
+                  mask_batch=None, glimpse_action_batch=None):
+        mse = MSEMasked()
+        mse_unmasked = nn.MSELoss()
+        total_write_loss = 0
+        total_step_loss = 0
+        total_post_write_loss = 0
+        total_post_step_loss = 0
+        overall_reconstruction_loss = 0
+        # initialize map
+        self.reset()
+        # get an empty reconstruction
+        post_step_reconstruction = self.reconstruct()
+        loss = 0
+        seq_len = state_batch.size(0)
+        batch_size = state_batch.size(1)
+        for t in range(seq_len):
+            # pick locations of attention
+            if mask_batch is None:
+                # glimpse agent is online
+                loc = glimpse_agent.step(self.map.detach(), random=False)
+                obs_mask, minus_obs_mask = glimpse_agent.create_attn_mask(loc)
+            else:
+                obs_mask = mask_batch[t]
+                minus_obs_mask = 1 - obs_mask
+                glimpse_agent.states.append(self.map.detach())
+                glimpse_agent.actions.append(glimpse_action_batch[t])
+            post_step_loss = mse(post_step_reconstruction, state_batch[t], obs_mask)
+            overall_reconstruction_loss += mse_unmasked(state_batch[t], post_step_reconstruction).item()
+            glimpse_agent.reward(post_step_loss.detach() + reward_batch[t])
+            post_step_loss = post_step_loss.mean()
+            # write new observation to map
+            obs = state_batch[t] * obs_mask
+            # obs = state_batch[t] * obs_mask + post_step_reconstruction.detach() * minus_obs_mask
+            write_cost = self.write(obs, obs_mask, minus_obs_mask)
+            # post-write reconstruction loss
+            post_write_reconstruction = self.reconstruct()
+            post_write_loss = mse(post_write_reconstruction, state_batch[t], obs_mask).mean()
+            # step forward the internal map
+            actions = action_batch[t].unsqueeze(dim=1)
+            onehot_action = torch.zeros(batch_size, 4).to(self.device)
+            onehot_action.scatter_(1, actions, 1)
+            step_cost = self.step(onehot_action)
+            post_step_reconstruction = self.reconstruct()
+            # add up all losses
+            # loss += 0.01 * (write_cost + step_cost) + post_write_loss + post_step_loss
+            loss += 0.01 * (write_cost + step_cost) + post_step_loss
+            total_write_loss += 0.01 * write_cost.item()
+            total_step_loss += 0.01 * + step_cost.item()
+            total_post_write_loss += post_write_loss.item()
+            total_post_step_loss += post_step_loss.item()
+        # update the training metrics
+        training_metrics['map/write cost'].update(total_write_loss)
+        training_metrics['map/step cost'].update(total_step_loss)
+        training_metrics['map/post write'].update(total_post_write_loss)
+        training_metrics['map/post step'].update(total_post_step_loss)
+        training_metrics['map/overall'].update(overall_reconstruction_loss)
+        return loss
 
     def to(self, device):
-        super().to(device)
-        self.reconstruction_blend.to(device)
+        self.write_model.to(device)
+        self.reconstruction_model.to(device)
+        self.blend_model.to(device)
+        self.step_model.to(device)
+        if hasattr(self, 'agent_step_model'):
+            self.agent_step_model.to(device)
 
-    def reset(self):
-        """
-        reset the map to beginning of episode
-        """
-        super().reset()
-        self.obs = torch.zeros((self.batchsize, self.channels, self.size, self.size)).to(self.device)
-        self.allobs = [self.obs,]
-
-    def write(self, glimpse, obs_mask, minus_obs_mask):
-        """
-        stores an incoming glimpse into the memory map
-        :param glimpse: a (batchsize, *attention_dims) input to be stored in memory
-        :param attn: indices of above glimpse in map coordinates (where to write)
-        """
-        # what to write
-        w = self.write_model(glimpse)
-        self.obs = w.clone()
-        self.allobs.append(self.obs)
-        # blend together the old dynamic info and the new dynamic info
-        w[:, self.channels//2:, :, :] = self.blend_model(w[:, self.channels//2:, :, :], self.map[:, self.channels//2:, :, :])
-        # write
-        map_mask, minus_map_mask = self.MaskObs2Map(obs_mask, minus_obs_mask)
-        w *= map_mask
-        self.map = self.map * minus_map_mask + w
-        # returns a cost of writing
-        return w.abs().mean()
-
-    def reconstruct(self):
-        """
-        attempt to reconstruct the entire state image using current map
-        """
-        blend = self.reconstruction_blend(self.map, self.obs)
-        return self.reconstruction_model(blend)
+    def share_memory(self):
+        self.write_model.share_memory()
+        self.reconstruction_model.share_memory()
+        self.blend_model.share_memory()
+        self.step_model.share_memory()
+        if hasattr(self, 'agent_step_model'):
+            self.agent_step_model.share_memory()
 
     def parameters(self):
-        return super().parameters() + list(self.reconstruction_blend.parameters())
+        allparams = list(self.write_model.parameters()) +\
+                    list(self.reconstruction_model.parameters()) +\
+                    list(self.blend_model.parameters()) +\
+                    list(self.step_model.parameters())
+        if hasattr(self, 'agent_step_model'):
+            allparams += list(self.agent_step_model.parameters())
+        return allparams
 
     def save(self, path):
-        torch.save({
+        tosave = {
             'write': self.write_model,
-            'step': self.step_model,
             'blend': self.blend_model,
-            'reconstruct': self.reconstruction_model,
-            'reconstruct_blend': self.reconstruction_blend
-        }, path)
+            'step': self.step_model,
+            'reconstruct': self.reconstruction_model}
+        if hasattr(self, 'agent_step_model'):
+            tosave['agent step'] = self.agent_step_model
+        torch.save(tosave, path)
 
     def load(self, path):
         models = torch.load(path, map_location='cpu')
         self.write_model = models['write']
-        self.step_model = models['step']
         self.blend_model = models['blend']
+        self.step_model = models['step']
         self.reconstruction_model = models['reconstruct']
-        self.reconstruction_blend = models['reconstruct_blend']
-
-
-class DNMNoMask(DynamicMap):
-    """Basically a DNM w/o write constraints"""
-    def write(self, glimpse, obs_mask, minus_obs_mask):
-        """
-        stores an incoming glimpse into the memory map
-        :param glimpse: a (batchsize, *attention_dims) input to be stored in memory
-        :param attn: indices of above glimpse in map coordinates (where to write)
-        """
-        # what to write
-        w = self.write_model(glimpse)
-        # blend together the old dynamic info and the new dynamic info
-        w[:, self.channels//2:, :, :] = self.blend_model(w[:, self.channels//2:, :, :], self.map[:, self.channels//2:, :, :])
-        self.map = w
-        # returns a cost of writing
-        return w.abs().mean()
+        if hasattr(self, 'agent_step_model'):
+            self.agent_step_model = models['agent step']
 
 
 class SpatialNet():
@@ -350,6 +295,7 @@ class SpatialNet():
         self.reconstruction_model = models['reconstruct']
 
 
+
 class MapEnvironment():
     """
     creates an environment style interface of getting
@@ -370,43 +316,43 @@ class MapEnvironment():
 
     def glimpse_step(self):
         #TODO: debug
-        # self.logits = self.glimpse_agent.pi(self.map.map.detach())
-        # self.action = self.glimpse_policy(self.logits).detach()
-        # action = self.action.cpu().numpy()
-        # # normalize actions to environment range
-        # loc = np.unravel_index(action, (self.env_size, self.env_size))
-        agent_loc = (self.env.player_body.position.x, 84-self.env.player_body.position.y)
-        goal_loc = (self.env.target_body.position.x, 84-self.env.target_body.position.y)
-        if self.ep_step == 0 or self.ep_step == 2:
-            # look at agent
-            loc = agent_loc
-        elif self.ep_step == 1 or self.ep_step == 3:
-            # look at goal
-            loc = goal_loc
-        else:
-            if np.random.random() < 0.4:
-                # look at agent
-                loc = agent_loc
-            else:
-                p = np.random.random()
-                if p < 0.5:
-                    # pick a random location between agent and goal
-                    c = np.random.random()
-                    locx = agent_loc[0] + c * (goal_loc[0] - agent_loc[0])
-                    locy = agent_loc[1] + c * (goal_loc[1] - agent_loc[1])
-                    loc = (locx, locy)
-                elif 0.5 < p < 0.7:
-                    # look at goal again
-                    loc = goal_loc
-                else:
-                    # look around randomly
-                    locx = 84 * np.random.random()
-                    locy = 84 * np.random.random()
-                    loc = (locx, locy)
-            # add a little bit of noise here
-            locx = loc[0] + 10 * np.random.randn()
-            locy = loc[1] + 10 * np.random.randn()
-            loc = (locx, locy)
+        self.logits = self.glimpse_agent.pi(self.map.map.detach())
+        self.action = self.glimpse_policy(self.logits).detach()
+        action = self.action.cpu().numpy()
+        # normalize actions to environment range
+        loc = np.unravel_index(action, (self.env_size, self.env_size))
+        # agent_loc = (self.env.player_body.position.x, 84-self.env.player_body.position.y)
+        # goal_loc = (self.env.target_body.position.x, 84-self.env.target_body.position.y)
+        # if self.ep_step == 0 or self.ep_step == 2:
+        #     # look at agent
+        #     loc = agent_loc
+        # elif self.ep_step == 1 or self.ep_step == 3:
+        #     # look at goal
+        #     loc = goal_loc
+        # else:
+        #     if np.random.random() < 0.4:
+        #         # look at agent
+        #         loc = agent_loc
+        #     else:
+        #         p = np.random.random()
+        #         if p < 0.5:
+        #             # pick a random location between agent and goal
+        #             c = np.random.random()
+        #             locx = agent_loc[0] + c * (goal_loc[0] - agent_loc[0])
+        #             locy = agent_loc[1] + c * (goal_loc[1] - agent_loc[1])
+        #             loc = (locx, locy)
+        #         elif 0.5 < p < 0.7:
+        #             # look at goal again
+        #             loc = goal_loc
+        #         else:
+        #             # look around randomly
+        #             locx = 84 * np.random.random()
+        #             locy = 84 * np.random.random()
+        #             loc = (locx, locy)
+        #     # add a little bit of noise here
+        #     locx = loc[0] + 10 * np.random.randn()
+        #     locy = loc[1] + 10 * np.random.randn()
+        #     loc = (locx, locy)
         return np.clip(loc, self.attn_size//2, self.env_size - 1 - self.attn_size//2).astype(np.int64)  # clip to avoid edges
 
     def glimpse_write(self, state):
@@ -453,7 +399,7 @@ class MapEnvironment():
         # and return the underlying state
         return self.map.map.detach().squeeze(), r, done, _
 
-    def train_map(self, exp, metrics):
+    def train_map(self, exp, metrics, skip_glimpse):
         state_batch, batch_masks, batch_actions, final_states, final_masks, batch_agent_actions, batch_rewards, batch_dones = exp
         mse = MSEMasked()
         mse_unmasked = nn.MSELoss()
@@ -490,7 +436,8 @@ class MapEnvironment():
             step_cost = self.map.step(onehot_action)
             post_step_reconstruction = self.map.reconstruct()
             # add up all losses
-            loss += 0.01 * (write_cost + step_cost) + post_write_loss + post_step_loss
+            # loss += 0.01 * (write_cost + step_cost) + post_write_loss + post_step_loss
+            loss += 0.01 * (write_cost + step_cost) + post_step_loss
             total_write_loss += 0.01 * write_cost.item()
             total_step_loss += 0.01 * + step_cost.item()
             total_post_write_loss += post_write_loss.item()
@@ -506,7 +453,7 @@ class MapEnvironment():
         self.optimizer.step()
         # finally update the glimpse agent as well
         self.glimpse_agent.actions = batch_actions.transpose(0,1)
-        self.glimpse_agent.update(metrics, self.map.map.detach(), skip_train=True, scope='glimpse')
+        self.glimpse_agent.update(metrics, self.map.map.detach(), skip_train=skip_glimpse, scope='glimpse')
         # glimpse agent does not get updated with the final observation because the terminal effect
         # of a glimpse is felt with one step delay. So, the final state glimpse agent
         # made a decision on was at map(seqlen-1)

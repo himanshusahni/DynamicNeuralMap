@@ -21,7 +21,7 @@ ATTN_SIZE = 5
 ATTN_SIZE = 21
 ENV_SIZE = 84
 MAP_SIZE = 21
-MAP_CHANNELS = 64
+MAP_CHANNELS = 48
 
 # env_name = 'DynamicObjects-v1'
 # from dynamicobject import DynamicObjects
@@ -43,7 +43,7 @@ np.random.seed(SEED)
 torch.manual_seed(SEED)
 
 # initialize training data
-demo_dir = '/home/himanshu/experiments/DynamicNeuralMap/testingdata-{}/'.format(env_name)
+demo_dir = '/home/himanshu/experiments/DynamicNeuralMap/testingdata-{}-v1/'.format(env_name)
 print('using training data from {}'.format(demo_dir))
 dataset = CurriculumDataset(demo_dir=demo_dir, preload=False)
 seq_len = 64
@@ -60,28 +60,27 @@ device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 print("will run on {} device!".format(device))
 
 # initialize map
-map = DynamicMap(
-# map = ConditionalDynamicMap(
+# map = DynamicMap(
+map = ConditionalDynamicMap(
 # map = BlendDNM(
 # map = SpatialNet(
     size=MAP_SIZE,
     channels=MAP_CHANNELS,
     env_size=ENV_SIZE,
     env_channels=CHANNELS,
-#    nb_actions=4,
+    nb_actions=4,
     batchsize=BATCH_SIZE,
     device=device)
 map.to(device)
 mse = MSEMasked()
 mse_unmasked = nn.MSELoss(reduction='none')
 # saved models
-name = '21map_DMM_nomaskwrite'
-# name = '21map_DMM_actioncondition2'
+name = '21map_DMM_actioncondition'
 # name = '21map_DMM_norecurrentbackground_noblend2'
 model_dir = '/home/himanshu/experiments/DynamicNeuralMap/{}/{}/'.format(env_name, name)
 model_paths = [os.path.join(model_dir, name) for name in os.listdir(model_dir)
                if name.endswith('pth') and
-               '36000' in name and
+               # '127000' in name and
                'map' in name]
 
 attn_span = range(-(ATTN_SIZE//2), ATTN_SIZE//2+1)
@@ -105,8 +104,8 @@ for path in model_paths:
     map.load(path)
     it = int(os.path.splitext(os.path.basename(path))[0].split('_')[-1][3:])
     # load the glimpse agent
-    # if it < 100000:
-    #     continue
+    if it < 329000:
+        continue
     pathdir, pathname = os.path.split(path)
     glimpsenet = torch.load(os.path.join(pathdir, pathname.replace("map", "glimpsenet")), map_location='cpu')
     glimpse_pi = glimpsenet['policy_network'].to(device)
@@ -127,9 +126,10 @@ for path in model_paths:
     except StopIteration:
         test_loader_iter = iter(test_loader)
         test_batch = next(test_loader_iter)
-    state_batch = test_batch
+    state_batch, action_batch, reward_batch = test_batch
     # send to gpu
     state_batch = state_batch.to(device)
+    action_batch = action_batch.to(device)
     attn_log_probs = []
     attn_rewards = []
     test_maps_prestep = []
@@ -164,17 +164,21 @@ for path in model_paths:
             l = l.mean(dim=1)
             channel_loss.append(l.detach().cpu().numpy())
         overall_reconstruction_loss.append(channel_loss)
-        obs = state_batch[t] * obs_mask + post_step_reconstruction.detach() * minus_obs_mask
+        # obs = state_batch[t] * obs_mask + post_step_reconstruction.detach() * minus_obs_mask
+        obs = state_batch[t] * obs_mask
         write_loss += map.write(obs, obs_mask, minus_obs_mask)
         post_write_reconstruction = map.reconstruct()
         post_write_loss.append(mse(post_write_reconstruction, state_batch[t-1], obs_mask).detach().cpu().numpy())
         test_maps_prestep.append(post_write_reconstruction[0].detach().cpu())
         # step forward the internal map
-        map.step()
-        # a = torch.zeros(BATCH_SIZE, 4).to(device)
-        # a[t%4] = 1
+        # onehot_action = torch.zeros(BATCH_SIZE, 4).to(device)
+        # onehot_action[:, t%4] = 1
+        actions = action_batch[t]
+        actions = actions.unsqueeze(dim=1)
+        onehot_action = torch.zeros(BATCH_SIZE, 4).to(device)
+        onehot_action.scatter_(1, actions, 1)
+        step_cost = map.step(onehot_action)
         # step_cost = map.step(F.softmax(torch.rand(BATCH_SIZE, 4), dim=0).to(device))
-        # step_cost = map.step(a)
         post_step_reconstruction = map.reconstruct()
         test_maps_poststep.append(post_step_reconstruction[0].detach().cpu())
         # select next attention spot
@@ -199,15 +203,15 @@ for path in model_paths:
         'sigma': sigma,
         'overall_reconstruction_loss': overall_reconstruction_loss,
     }, os.path.join(model_dir, 'loss_{}.pt'.format(model_name)))
-    # save some generated images
-    save_example_images(
-       [state_batch[t][0].cpu() for t in range(seq_len)],
-       test_maps_heatmaps,
-       test_maps_prestep,
-       test_maps_poststep,
-       test_locs,
-       os.path.join(model_dir, 'predictions_{}.jpeg'.format(model_name)),
-       env)
+    # # save some generated images
+    # save_example_images(
+    #    [state_batch[t][0].cpu() for t in range(seq_len)],
+    #    test_maps_heatmaps,
+    #    test_maps_prestep,
+    #    test_maps_poststep,
+    #    test_locs,
+    #    os.path.join(model_dir, 'predictions_{}.jpeg'.format(model_name)),
+    #    env)
     to_print = "[{}] test loss: {:.3f}".format(model_name, test_loss)
     to_print += ", overall image loss: {:.3f}".format(overall_reconstruction_loss.mean(dim=-1).sum(dim=-1).mean())
     to_print += ", time/iter (ms): {:.3f}".format(1000 * (time.time() - start))
