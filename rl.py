@@ -23,8 +23,8 @@ class GlimpseAgent():
         self.value_network = value_network
         self.policy = policies.MultinomialPolicy()
         self.device = device
-        self.a2c = algorithms.A2C(policy_network, value_network, self.policy, device, gamma=0.9,
-                                  entropy_weighting=0.01)
+        self.a2c = algorithms.A2C(policy_network, value_network, self.policy, device, gamma=0.99,
+                                  entropy_weighting=1.)
         self.pi = self.a2c.pi
 
         attn_span = range(-(self.attn_size// 2), self.attn_size// 2 + 1)
@@ -71,10 +71,10 @@ class GlimpseAgent():
         else:
             self.dones.append(d)
 
-    def update(self, final_state, metrics, scope=''):
+    def update(self, final_state, dones, metrics, scope=''):
         """update glimpse policy using experience from this episode"""
         # designate last state of sequence as terminal for glimpse agent
-        self.dones[-1][:] = 1
+        self.dones[-1][:] = dones
         states = torch.cat([state.unsqueeze(dim=1) for state in self.states], dim=1)
         actions = torch.cat([action.unsqueeze(dim=1) for action in self.actions], dim=1)
         rewards = torch.cat([reward.unsqueeze(dim=1) for reward in self.rewards], dim=1)
@@ -397,6 +397,7 @@ class DMMAgent():
         glimpse_actions = []
         actions = []
         rewards = []
+        dones = []
         # draw some random numbers
         idxs = np.random.randint(0, nb_valid_samples - seqlen, (self.batchsize,))
         skips = 0
@@ -419,6 +420,7 @@ class DMMAgent():
             glimpse_actions.append(buffer['glimpse_actions'][t, seq_idx].unsqueeze(0))
             actions.append(buffer['actions'][t, seq_idx].unsqueeze(0))
             rewards.append(buffer['rewards'][t, seq_idx].unsqueeze(0))
+            dones.append(buffer['dones'][t, seq_idx[-1]].unsqueeze(0))
         metrics['map/done_skips'].update(skips)
 
         glimpses = torch.cat(glimpses, dim=0).transpose(0,1)
@@ -426,7 +428,32 @@ class DMMAgent():
         glimpse_actions = torch.cat(glimpse_actions, dim=0).transpose(0,1)
         actions = torch.cat(actions, dim=0).transpose(0,1)
         rewards = torch.cat(rewards, dim=0).transpose(0,1)
-        return glimpses, masks, glimpse_actions, actions, rewards
+        dones = torch.cat(dones, dim=0)
+        return glimpses, masks, glimpse_actions, actions, rewards, dones
+
+    # samples_added = samples_added // self.nb_threads  # samples in each row of buffer
+    # nb_valid_samples = min(samples_added, self.max_buffer_len)
+    # glimpses = []
+    # masks = []
+    # glimpse_actions = []
+    # actions = []
+    # rewards = []
+    # # draw some random numbers
+    # all_ep_end_idxs = buffer['ep_len'][:, :nb_valid_samples].nonzero()
+    # ep_lengths = buffer['ep_len'][all_ep_end_idxs[:, 0], all_ep_end_idxs[:, 1]]
+    # valid_ep_end_idxs = all_ep_end_idxs[ep_lengths > seqlen]
+    # ep_end_idxs = valid_ep_end_idxs[np.random.choice(valid_ep_end_idxs.size(0), self.batchsize)]
+    # skips = 0
+    # for t, ep_end_idx in ep_end_idxs:
+    #     start_idx = ep_end_idx - seqlen + 1 - np.random.randint(buffer['ep_len'][t, ep_end_idx] - seqlen)
+    #     seq_idx = np.array(range(start_idx, start_idx + seqlen))
+    #     seq_idx[seq_idx < 0] += nb_valid_samples
+    #     glimpses.append(buffer['obs'][t, seq_idx].unsqueeze(0))
+    #     masks.append(buffer['masks'][t, seq_idx].unsqueeze(0))
+    #     glimpse_actions.append(buffer['glimpse_actions'][t, seq_idx].unsqueeze(0))
+    #     actions.append(buffer['actions'][t, seq_idx].unsqueeze(0))
+    #     rewards.append(buffer['rewards'][t, seq_idx].unsqueeze(0))
+    # metrics['map/done_skips'].update(skips)
 
     def train(self, make_env):
         """
@@ -535,23 +562,24 @@ class DMMAgent():
         #           25: 0.9}
         # self.glimpse_agent.a2c.gamma = gammas[seqlen]
         samples_added = 0
+        self.nb_dmm_updates = self.nb_threads * self.nb_rollout_steps * 3 // (seqlen * self.batchsize)
         metrics = {'agent/policy_loss': AverageMeter(history=10),
                    'agent/val_loss': AverageMeter(history=10),
                    'agent/policy_entropy': AverageMeter(history=10),
                    'agent/avg_val': AverageMeter(history=10),
                    'agent/avg_reward': AverageMeter(history=10),
                    'agent/avg_ep_len': AverageMeter(history=10),
-                   'glimpse/policy_loss': AverageMeter(history=10 * self.nb_dmm_updates),
-                   'glimpse/val_loss': AverageMeter(history=10 * self.nb_dmm_updates),
-                   'glimpse/policy_entropy': AverageMeter(history=10 * self.nb_dmm_updates),
-                   'glimpse/avg_val': AverageMeter(history=10 * self.nb_dmm_updates),
-                   'glimpse/avg_reward': AverageMeter(history=10 * self.nb_dmm_updates),
-                   'map/write cost': AverageMeter(history=10 * self.nb_dmm_updates),
-                   'map/step cost': AverageMeter(history=10 * self.nb_dmm_updates),
-                   'map/post write': AverageMeter(history=10 * self.nb_dmm_updates),
-                   'map/post step': AverageMeter(history=10 * self.nb_dmm_updates),
-                   'map/overall': AverageMeter(history=10 * self.nb_dmm_updates),
-                   'map/done_skips': AverageMeter(history=10 * self.nb_dmm_updates),
+                   'glimpse/policy_loss': AverageMeter(history=100),
+                   'glimpse/val_loss': AverageMeter(history=100),
+                   'glimpse/policy_entropy': AverageMeter(history=100),
+                   'glimpse/avg_val': AverageMeter(history=100),
+                   'glimpse/avg_reward': AverageMeter(history=100),
+                   'map/write cost': AverageMeter(history=100),
+                   'map/step cost': AverageMeter(history=100),
+                   'map/post write': AverageMeter(history=100),
+                   'map/post step': AverageMeter(history=100),
+                   'map/overall': AverageMeter(history=100),
+                   'map/done_skips': AverageMeter(history=100),
                    }
         while step < self.max_train_steps:
             # start collecting data
@@ -570,29 +598,33 @@ class DMMAgent():
                     rollout['rewards'],
                     rollout['dones']), rollout['states'][:,-1], metrics, scope='agent')
             metrics['agent/avg_ep_len'].update(rollout['avg_ep_len'].mean().item())
-            # update DMM!
-            if metrics['agent/avg_ep_len'].avg > 2 * seqlen:
-                if seqlen < maxseqlen:
-                    seqlen += 1
-                    print("Increasing sequence length to {}".format(seqlen))
-                    # self.glimpse_agent.a2c.gamma = gammas[seqlen]
-            for _ in range(self.nb_dmm_updates):
-                glimpses, masks, glimpse_actions, actions, rewards = \
-                    self.create_batch(buffer, samples_added, seqlen, metrics)
-                self.optimizer.zero_grad()
-                loss = self.map.lossbatch(
-                    glimpses,
-                    actions,
-                    rewards,
-                    self.glimpse_agent,
-                    metrics,
-                    masks,
-                    glimpse_actions)
-                # propagate loss back through entire training sequence
-                loss.backward()
-                self.optimizer.step()
-                # and update the glimpse agent
-                self.glimpse_agent.update(self.map.map.detach(), metrics, scope='glimpse')
+
+            # train DMM!
+            if samples_added > self.max_buffer_len * self.nb_threads / 2:
+                mean_seq_len = metrics['agent/avg_ep_len'].avg
+                self.nb_dmm_updates = int(self.nb_threads * self.nb_rollout_steps // (mean_seq_len * self.batchsize))
+                # picking a curriculum for sequence length
+                quartiles = np.percentile(np.array(metrics['agent/avg_ep_len'].q), [25, 75])
+                quartiles = [np.floor(quartiles[0]), np.ceil(quartiles[1])]
+                for _ in range(self.nb_dmm_updates):
+                    # max seq length is preset
+                    seqlen = np.min(maxseqlen, np.random.randint(*quartiles))
+                    glimpses, masks, glimpse_actions, actions, rewards, dones = \
+                        self.create_batch(buffer, samples_added, seqlen, metrics)
+                    self.optimizer.zero_grad()
+                    loss = self.map.lossbatch(
+                        glimpses,
+                        actions,
+                        rewards,
+                        self.glimpse_agent,
+                        metrics,
+                        masks,
+                        glimpse_actions)
+                    # propagate loss back through entire training sequence
+                    loss.backward()
+                    self.optimizer.step()
+                    # and update the glimpse agent
+                    self.glimpse_agent.update(self.map.map.detach(), dones, metrics, scope='glimpse')
             step += 1
             # test
             if step % self.test_freq == 0:
