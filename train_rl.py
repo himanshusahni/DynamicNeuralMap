@@ -133,7 +133,6 @@ if __name__ == '__main__':
         frame_stack=args.frame_stack,
         obs_shape=obs_shape,
         attn_size=21,
-        nb_dmm_updates=10,
         batchsize=4,
         max_buffer_len=10000,
         agent_train_delay=250000,

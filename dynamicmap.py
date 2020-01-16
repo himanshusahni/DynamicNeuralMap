@@ -109,7 +109,7 @@ class DynamicMap():
 
     def lossbatch(self, state_batch, action_batch, reward_batch,
                   glimpse_agent, training_metrics,
-                  mask_batch=None, glimpse_action_batch=None):
+                  mask_batch=None, unmasked_state_batch=None, glimpse_action_batch=None):
         mse = MSEMasked()
         mse_unmasked = nn.MSELoss()
         total_write_loss = 0
@@ -117,6 +117,7 @@ class DynamicMap():
         total_post_write_loss = 0
         total_post_step_loss = 0
         overall_reconstruction_loss = 0
+        min_overall_reconstruction_loss = 1.
         # initialize map
         self.reset()
         # get an empty reconstruction
@@ -136,9 +137,12 @@ class DynamicMap():
                 glimpse_agent.states.append(self.map.detach())
                 glimpse_agent.actions.append(glimpse_action_batch[t])
             post_step_loss = mse(post_step_reconstruction, state_batch[t], obs_mask)
-            overall_reconstruction_loss += mse_unmasked(state_batch[t], post_step_reconstruction).item()
             glimpse_agent.reward(post_step_loss.detach() + reward_batch[t])
             post_step_loss = post_step_loss.mean()
+            if unmasked_state_batch is None:
+                recontruction_loss = mse_unmasked(post_step_reconstruction, state_batch[t]).mean()
+            else:
+                recontruction_loss = mse_unmasked(post_step_reconstruction, unmasked_state_batch[t]).mean()
             # write new observation to map
             obs = state_batch[t] * obs_mask
             # obs = state_batch[t] * obs_mask + post_step_reconstruction.detach() * minus_obs_mask
@@ -159,12 +163,18 @@ class DynamicMap():
             total_step_loss += 0.01 * + step_cost.item()
             total_post_write_loss += post_write_loss.item()
             total_post_step_loss += post_step_loss.item()
+            overall_reconstruction_loss += recontruction_loss.item()
+            if t == 0:
+                min_overall_reconstruction_loss = recontruction_loss.item()
+            elif recontruction_loss.item() < min_overall_reconstruction_loss:
+                min_overall_reconstruction_loss = recontruction_loss.item()
         # update the training metrics
-        training_metrics['map/write cost'].update(total_write_loss / seq_len)
-        training_metrics['map/step cost'].update(total_step_loss / seq_len)
-        training_metrics['map/post write'].update(total_post_write_loss / seq_len)
-        training_metrics['map/post step'].update(total_post_step_loss / seq_len)
+        training_metrics['map/write_cost'].update(total_write_loss / seq_len)
+        training_metrics['map/step_cost'].update(total_step_loss / seq_len)
+        training_metrics['map/post_write'].update(total_post_write_loss / seq_len)
+        training_metrics['map/post_step'].update(total_post_step_loss / seq_len)
         training_metrics['map/overall'].update(overall_reconstruction_loss / seq_len)
+        training_metrics['map/min_overall'].update(min_overall_reconstruction_loss)
         return loss
 
     def to(self, device):
