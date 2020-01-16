@@ -103,7 +103,7 @@ if __name__ == '__main__':
     ppo = algorithms.PPO(
         actor_critic_arch=networks.ActorCritic,
         trunk_arch=ConvTrunk3,
-        state_shape=state_shape,
+        state_shape=obs_shape,
         action_space=nb_actions,
         policy=policy,
         ppo_epochs=4,
@@ -116,7 +116,7 @@ if __name__ == '__main__':
         clip_value_loss=False,
         value_loss_weighting=0.5,
         entropy_weighting=0.01)
-    savedir = '/home/himanshu/experiments/DynamicNeuralMap/PhysEnv/RL_DMM_refactored'
+    savedir = '/home/himanshu/experiments/DynamicNeuralMap/PhysEnv/RL_DMM_refactored_reconstructionstate'
     calls = [callbacks.PrintCallback(freq=10),
              callbacks.SaveMetrics(
                  save_dir=savedir,

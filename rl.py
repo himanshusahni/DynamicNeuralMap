@@ -294,7 +294,7 @@ class DMMAgent():
                         obs, unmasked_obs, mask = self.env.reset(loc=glimpse_action_clipped)
                         # write observation to map
                         self.map.write(obs.unsqueeze(dim=0), mask, 1 - mask)
-                        state = self.map.map.detach()
+                        state = self.map.reconstruct().detach()
                         if ep_len > 0:
                             avg_ep_len.update(ep_len)
                         ep_len = 0
@@ -333,7 +333,7 @@ class DMMAgent():
                     mask = next_mask
                     # write observation to map
                     self.map.write(obs.unsqueeze(dim=0), mask, 1 - mask)
-                    state = self.map.map.detach()
+                    state = self.map.reconstruct().detach()
                     self.buffer_idx = (self.buffer_idx + 1) % self.buffer_len
                     ep_len += 1
                 # finally add the next state into the states buffer as well to do value estimation
@@ -360,7 +360,7 @@ class DMMAgent():
                     # write observation to map
                     self.map.write(obs.unsqueeze(dim=0), mask, 1-mask)
                     # take a step in the environment!
-                    state = self.map.map.detach()
+                    state = self.map.reconstruct().detach()
                     action = self.policy(pi(state), test=True).detach()
                     glimpse_logits = self.glimpse_agent.pi(self.map.map.detach())
                     glimpse_action = self.glimpse_agent.policy(glimpse_logits).detach()
@@ -470,7 +470,7 @@ class DMMAgent():
             'states': torch.empty(
                 self.nb_threads,
                 self.nb_rollout_steps+1,
-                *self.state_shape).to(self.device).share_memory_(),
+                *self.obs_shape).to(self.device).share_memory_(),
             'actions': torch.empty(
                 self.nb_threads,
                 self.nb_rollout_steps,

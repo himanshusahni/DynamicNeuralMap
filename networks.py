@@ -323,10 +323,10 @@ class ConvTrunk3(nn.Module):
         super().__init__()
         channels = state_shape[0]
         input_size = state_shape[1]
-        self.conv1 = nn.Conv2d(channels, 64, 4, stride=2, padding=2)
+        self.conv1 = nn.Conv2d(channels, 64, 4, stride=2, padding=1)
         input_size = np.ceil(input_size/2)
-        self.conv2 = nn.Conv2d(64, 64, 3, stride=1, padding=1)
-        input_size = np.ceil(input_size/1)
+        self.conv2 = nn.Conv2d(64, 64, 3, stride=2, padding=1)
+        input_size = np.ceil(input_size/2)
         self.print_info()
 
         self.output_size = int(input_size * input_size * 64)
