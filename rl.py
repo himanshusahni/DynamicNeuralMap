@@ -610,7 +610,7 @@ class DMMAgent():
                 quartiles = [np.floor(quartiles[0]), np.ceil(quartiles[1])]
                 for _ in range(self.nb_dmm_updates):
                     # max seq length is preset
-                    seqlen = np.min(maxseqlen, np.random.randint(*quartiles))
+                    seqlen = min(maxseqlen, np.random.randint(*quartiles))
                     glimpses, masks, glimpse_actions, actions, rewards, dones = \
                         self.create_batch(buffer, samples_added, seqlen, metrics)
                     self.optimizer.zero_grad()

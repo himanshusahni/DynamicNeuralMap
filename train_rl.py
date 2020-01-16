@@ -136,7 +136,7 @@ if __name__ == '__main__':
         nb_dmm_updates=10,
         batchsize=4,
         max_buffer_len=10000,
-        agent_train_delay=1000000,
+        agent_train_delay=250000,
         device=args.device,
         callbacks=calls,)
     agent.callbacks.append(callbacks.SaveNetworks(
