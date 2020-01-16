@@ -291,11 +291,13 @@ class DMMAgent():
                     if done:
                         self.map.reset()
                         # starting glimpse location
-                        state = self.map.map.detach()
-                        glimpse_logits = self.glimpse_agent.pi(state)
+                        glimpse_logits = self.glimpse_agent.pi(self.map.map.detach())
                         glimpse_action = self.glimpse_agent.policy(glimpse_logits).detach()
                         glimpse_action_clipped = self.glimpse_agent.norm_and_clip(glimpse_action.cpu().numpy())
                         obs, mask = self.env.reset(loc=glimpse_action_clipped)
+                        # write observation to map
+                        self.map.write(obs.unsqueeze(dim=0), mask, 1 - mask)
+                        state = self.map.map.detach()
                         if ep_len > 0:
                             avg_ep_len.update(ep_len)
                         ep_len = 0
@@ -303,10 +305,7 @@ class DMMAgent():
                     self.buffer['obs'][self.t, self.buffer_idx] = obs
                     self.buffer['masks'][self.t, self.buffer_idx] = mask
                     self.buffer['glimpse_actions'][self.t, self.buffer_idx] = glimpse_action
-                    # write observation to map
-                    self.map.write(obs.unsqueeze(dim=0), mask, 1-mask)
                     # take a step in the environment!
-                    state = self.map.map.detach()
                     action = self.policy(pi(state)).detach()
                     # step the map forward according to agent action
                     onehot_action = torch.zeros((1, 4)).to(self.device)
@@ -331,6 +330,9 @@ class DMMAgent():
                     # move to next step
                     obs = next_obs
                     mask = next_mask
+                    # write observation to map
+                    self.map.write(obs.unsqueeze(dim=0), mask, 1 - mask)
+                    state = self.map.map.detach()
                     self.buffer_idx = (self.buffer_idx + 1) % self.buffer_len
                     ep_len += 1
                 # finally add the next state into the states buffer as well to do value estimation
