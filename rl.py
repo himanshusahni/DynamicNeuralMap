@@ -24,7 +24,7 @@ class GlimpseAgent():
         self.policy = policies.MultinomialPolicy()
         self.device = device
         self.a2c = algorithms.A2C(policy_network, value_network, self.policy, device, gamma=0.99,
-                                  entropy_weighting=1.)
+                                  entropy_weighting=0.1)
         self.pi = self.a2c.pi
 
         attn_span = range(-(self.attn_size// 2), self.attn_size// 2 + 1)
@@ -227,8 +227,8 @@ class DMMAgent():
         self.map.share_memory()
         self.optimizer = optim.Adam(self.map.parameters(), lr=1e-4)
         # create glimpse agent
-        glimpse_policy_network = PolicyFunction_21_84(channels=state_shape[0])
-        glimpse_value_network = ValueFunction(channels=state_shape[0], input_size=state_shape[1])
+        glimpse_policy_network = PolicyFunction_21_84(channels=state_shape[0] + 1)
+        glimpse_value_network = ValueFunction(channels=state_shape[0] + 1, input_size=state_shape[1])
         glimpse_policy_network.share_memory()
         glimpse_value_network.share_memory()
         self.glimpse_agent = GlimpseAgent(
@@ -288,7 +288,7 @@ class DMMAgent():
                     if done:
                         self.map.reset()
                         # starting glimpse location
-                        glimpse_logits = self.glimpse_agent.pi(self.map.map.detach())
+                        glimpse_logits = self.glimpse_agent.pi(torch.cat([self.map.map.detach(), self.map.recency.detach()], dim=1))
                         glimpse_action = self.glimpse_agent.policy(glimpse_logits).detach()
                         glimpse_action_clipped = self.glimpse_agent.norm_and_clip(glimpse_action.cpu().numpy())
                         obs, unmasked_obs, mask = self.env.reset(loc=glimpse_action_clipped)
@@ -312,7 +312,7 @@ class DMMAgent():
                     # no need to store gradient information for rollouts
                     self.map.detach()
                     # glimpse agent decides where to look after map has stepped
-                    glimpse_logits = self.glimpse_agent.pi(self.map.map.detach())
+                    glimpse_logits = self.glimpse_agent.pi(torch.cat([self.map.map.detach(), self.map.recency.detach()], dim=1))
                     glimpse_action = self.glimpse_agent.policy(glimpse_logits).detach()
                     glimpse_action_clipped = self.glimpse_agent.norm_and_clip(glimpse_action.cpu().numpy())
                     # step!
@@ -349,7 +349,7 @@ class DMMAgent():
                 idx = startq.get()
                 self.map.reset()
                 # starting glimpse location
-                glimpse_logits = self.glimpse_agent.pi(self.map.map.detach())
+                glimpse_logits = self.glimpse_agent.pi(torch.cat([self.map.map.detach(), self.map.recency.detach()], dim=1))
                 glimpse_action = self.glimpse_agent.policy(glimpse_logits).detach()
                 glimpse_action = glimpse_action.cpu().numpy()
                 glimpse_action_clipped = self.glimpse_agent.norm_and_clip(glimpse_action)
@@ -362,7 +362,7 @@ class DMMAgent():
                     # take a step in the environment!
                     state = self.map.map.detach()
                     action = self.policy(pi(state), test=True).detach()
-                    glimpse_logits = self.glimpse_agent.pi(self.map.map.detach())
+                    glimpse_logits = self.glimpse_agent.pi(torch.cat([self.map.map.detach(), self.map.recency.detach()], dim=1))
                     glimpse_action = self.glimpse_agent.policy(glimpse_logits).detach()
                     glimpse_action = glimpse_action.cpu().numpy()
                     glimpse_action_clipped = self.glimpse_agent.norm_and_clip(glimpse_action)
@@ -635,7 +635,7 @@ class DMMAgent():
                     self.optimizer.step()
                     # and update the glimpse agent
                     if samples_added > 1.2 * self.dmm_train_delay:
-                        self.glimpse_agent.update(self.map.map.detach(), dones, metrics, scope='glimpse')
+                        self.glimpse_agent.update(torch.cat([self.map.map.detach(), self.map.recency.detach()], dim=1), dones, metrics, scope='glimpse')
                     self.glimpse_agent.reset()
             step += 1
             # test

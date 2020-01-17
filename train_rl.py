@@ -116,7 +116,7 @@ if __name__ == '__main__':
         clip_value_loss=False,
         value_loss_weighting=0.5,
         entropy_weighting=0.01)
-    savedir = '/home/himanshu/experiments/DynamicNeuralMap/PhysEnv/RL_DMM_refactored'
+    savedir = '/home/himanshu/experiments/DynamicNeuralMap/PhysEnv/RL_DMM_refactored_recency'
     calls = [callbacks.PrintCallback(freq=10),
              callbacks.SaveMetrics(
                  save_dir=savedir,
