@@ -32,7 +32,7 @@ map = DynamicMap(
     nb_actions=4,
     device=device)
 
-for step in range(1300, 1400, 100):
+for step in range(30000, 30100, 100):
     ac = torch.load(os.path.join(d, 'actor_critic_{}.pth'.format(step)), map_location=device)
 
     model_dir = d
@@ -66,7 +66,7 @@ for step in range(1300, 1400, 100):
     glimpse_logits = glimpse_agent.pi(state)
     glimpse_action = glimpse_agent.policy(glimpse_logits).detach()
     glimpse_action_clipped = glimpse_agent.norm_and_clip(glimpse_action.cpu().numpy())
-    obs, mask = env.reset(loc=glimpse_action_clipped)
+    obs, _, mask = env.reset(loc=glimpse_action_clipped)
     done = False
     overall_error = 0
     for i in range(steps):
@@ -102,7 +102,7 @@ for step in range(1300, 1400, 100):
         glimpse_logits = glimpse_agent.pi(map.map.detach())
         glimpse_action = glimpse_agent.policy(glimpse_logits).detach()
         glimpse_action_clipped = glimpse_agent.norm_and_clip(glimpse_action.cpu().numpy())
-        (next_obs, next_mask), r, done, _ = env.step(action.cpu().numpy(), loc=glimpse_action_clipped)
+        (next_obs, _, next_mask), r, done, _ = env.step(action.cpu().numpy(), loc=glimpse_action_clipped)
         # next display reconstruction of what map sees
         reconstruction = utils.postprocess(map.reconstruct().detach().cpu().numpy()).squeeze()
         overall_error += (((env.env.render() - reconstruction)/255.)**2).mean()
