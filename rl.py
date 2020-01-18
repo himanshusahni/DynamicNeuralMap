@@ -24,7 +24,7 @@ class GlimpseAgent():
         self.policy = policies.MultinomialPolicy()
         self.device = device
         self.a2c = algorithms.A2C(policy_network, value_network, self.policy, device, gamma=0.99,
-                                  entropy_weighting=1.)
+                                  entropy_weighting=.1)
         self.pi = self.a2c.pi
 
         attn_span = range(-(self.attn_size// 2), self.attn_size// 2 + 1)
