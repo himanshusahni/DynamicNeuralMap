@@ -157,8 +157,8 @@ class DynamicMap():
             step_cost = self.step(onehot_action)
             post_step_reconstruction = self.reconstruct()
             # add up all losses
-            # loss += 0.01 * (write_cost + step_cost) + post_write_loss + post_step_loss
-            loss += 0.01 * (write_cost + step_cost) + post_step_loss
+            loss += 0.01 * (write_cost + step_cost) + post_write_loss + post_step_loss
+            # loss += 0.01 * (write_cost + step_cost) + post_step_loss
             total_write_loss += 0.01 * write_cost.item()
             total_step_loss += 0.01 * + step_cost.item()
             total_post_write_loss += post_write_loss.item()

@@ -225,7 +225,8 @@ class DMMAgent():
             device=device)
         self.map.to(device)
         self.map.share_memory()
-        self.optimizer = optim.Adam(self.map.parameters(), lr=1e-4)
+        self.lr = 1e-4
+        self.optimizer = optim.Adam(self.map.parameters(), lr=self.lr)
         # create glimpse agent
         glimpse_policy_network = PolicyFunction_21_84(channels=state_shape[0])
         glimpse_value_network = ValueFunction(channels=state_shape[0], input_size=state_shape[1])
@@ -633,6 +634,9 @@ class DMMAgent():
                     # propagate loss back through entire training sequence
                     loss.backward()
                     self.optimizer.step()
+                    # if step % 10000 == 0:
+                    #     for param_group in self.optimizer.param_groups:
+                    #         param_group['lr'] = self.lr * 0.1
                     # and update the glimpse agent
                     if samples_added > 1.2 * self.dmm_train_delay:
                         self.glimpse_agent.update(self.map.map.detach(), dones, metrics, scope='glimpse')
