@@ -12,7 +12,6 @@ from networks import *
 import numpy as np
 from collections import deque
 
-
 class GlimpseAgent():
     """wrapper around an A2C agent for glimpse actions"""
     def __init__(self, output_size, attn_size, batchsize, policy_network, value_network, device):
@@ -24,7 +23,7 @@ class GlimpseAgent():
         self.policy = policies.MultinomialPolicy()
         self.device = device
         self.a2c = algorithms.A2C(policy_network, value_network, self.policy, device, gamma=0.9,
-                                  entropy_weighting=0.1)
+                                  entropy_weighting=.1)
         self.pi = self.a2c.pi
 
         attn_span = range(-(self.attn_size// 2), self.attn_size// 2 + 1)
@@ -99,6 +98,36 @@ class GlimpseAgent():
         self.actions = []
         self.rewards = []
         self.dones = []
+
+
+class OffPolicyGlimpseAgent(GlimpseAgent):
+    """Off policy version of glimpse agent using DQN"""
+    def __init__(self, output_size, attn_size, batchsize, q_arch, device):
+        self.output_size = output_size
+        self.attn_size = attn_size
+        self.batchsize = batchsize
+        self.policy = policies.MultinomialPolicy()
+        self.device = device
+        self.dqn = algorithms.DQN(q_arch, gamma=0.9, target_copy_freq=100)
+        self.pi = self.dqn.q
+
+        attn_span = range(-(self.attn_size// 2), self.attn_size// 2 + 1)
+        self.xy = np.flip(np.array(np.meshgrid(attn_span, attn_span)), axis=0).reshape(2, -1)
+        self.idxs_dim_0 = np.repeat(np.arange(self.batchsize), self.attn_size * self.attn_size)
+
+        self.reset()
+
+    def update(self, final_state, dones, metrics, scope=''):
+        """update glimpse policy using experience from this episode"""
+        # designate last state of sequence as terminal for glimpse agent
+        self.dones[-1][:] = dones
+        states = torch.cat(self.states, dim=0)
+        next_states = torch.cat(self.states[1:].append(final_state), dim=0)
+        actions = torch.cat(self.actions, dim=0)
+        rewards = torch.cat(self.rewards, dim=0)
+        dones = torch.cat(self.dones, dim=0)
+        exp = (states, actions, next_states, rewards, dones)
+        loss = self.dqn.update(exp, metrics, scope)
 
 
 class AttentionConstrainedEnvironment:
@@ -180,6 +209,140 @@ class AttentionConstrainedEnvironment:
         return self.mask_state(state, loc), r, done, _
 
 
+class MultithreadedAttentionConstrainedRolloutAgent:
+    """
+    Used mainly to collect rollout data in an environment.
+    If policy is not given, acts randomly
+    """
+    def __init__(self, nb_threads, nb_rollout_steps, max_env_steps, state_shape,
+                 frame_stack, device, callbacks, pi=None, policy=None):
+        self.nb_threads = nb_threads
+        self.nb_rollout_steps = nb_rollout_steps
+        self.max_env_steps = max_env_steps
+        self.max_train_steps = int(max_env_steps // (nb_threads * nb_rollout_steps))
+        self.state_shape = state_shape
+        self.k = frame_stack
+        self.device = device
+        self.callbacks = callbacks
+        self.pi = pi
+        self.policy = policy
+
+    class Clone:
+        def __init__(self, t, preprocess, nb_rollout, k, device, rollout, policy):
+            """create a new environment"""
+            self.t = t
+            self.nb_rollout = nb_rollout
+            self.rollout = rollout
+            self.preprocess = preprocess
+            self.k = k
+            self.device = device
+            self.policy = policy
+
+        def run(self, pi, env, startq, stopq):
+            from phys_env import phys_env
+            self.env = phys_env.PhysEnv()
+            # self.env = env
+            # self.env.env = phys_env.PhysEnv()
+            done = True
+            while True:
+                startq.get()
+                for step in range(self.nb_rollout):
+                    if done:
+                        obs, unmased_obs, mask = self.preprocess(self.env.reset()).to(self.device)
+                        stateq = deque(
+                            [torch.zeros(obs.shape).to(self.device)
+                             for _ in range(self.k-1)], maxlen=self.k)
+                        stateq.append(obs)
+                        state = torch.cat(list(stateq), dim=0)
+                    if self.policy:
+                        action = self.policy(pi(state.unsqueeze(dim=0)))
+                        (next_obs, next_unmasked_obs, next_mask), r, done, _ = \
+                            self.env.step(action.detach().cpu().numpy())
+                    else:
+                        action = self.env.action_space.sample()
+                        (next_obs, next_unmasked_obs, next_mask), r, done, _ = \
+                            self.env.step(action)
+                    self.rollout['states'][self.t, step] = obs
+                    self.rollout['unmasked_states'][self.t, step] = unmasked_obs
+                    self.rollout['glimpse_actions'][self.t, step] = glimpse_action
+                    self.rollout['actions'][self.t, step] = action
+                    self.rollout['rewards'][self.t, step] = r
+                    self.rollout['dones'][self.t, step] = float(done)
+                    obs = self.preprocess(next_obs).to(self.device)
+                    stateq.append(obs)
+                    state = torch.cat(list(stateq), dim=0)
+                # finally add the next state into the states buffer as well to do value estimation
+                self.rollout['states'][self.t, self.nb_rollout] = obs
+                stopq.put(self.t)
+
+    def train(self, make_env, preprocess):
+        # create shared data between agent clones
+        rollout = {
+            'states': torch.empty(
+                self.nb_threads,
+                self.nb_rollout_steps+1,
+                *self.state_shape).to(self.device).share_memory_(),
+            'unmasked_states': torch.empty(
+                self.nb_threads,
+                self.nb_rollout_steps,
+                *self.state_shape).to(self.device).share_memory_(),
+            'glimpse_actions': torch.empty(
+                self.nb_threads,
+                self.nb_rollout_steps,
+                dtype=torch.long).to(self.device).share_memory_(),
+            'actions': torch.empty(
+                self.nb_threads,
+                self.nb_rollout_steps,
+                dtype=torch.long).to(self.device).share_memory_(),
+            'rewards': torch.empty(
+                self.nb_threads,
+                self.nb_rollout_steps).to(self.device).share_memory_(),
+            'dones': torch.empty(
+                self.nb_threads,
+                self.nb_rollout_steps).to(self.device).share_memory_(),
+        }
+        # stopqs and startqs tell when the actors should collect rollouts
+        stopqs = []
+        startqs = []
+        procs = []
+        for t in range(self.nb_threads):
+            startq = mp.Queue(1)
+            startqs.append(startq)
+            stopq = mp.Queue(1)
+            stopqs.append(stopq)
+            c = self.Clone(
+                t, preprocess, self.nb_rollout_steps, self.k, self.device, rollout, self.policy)
+            proc = mp.Process(target=c.run, args=(self.pi, make_env(), startq, stopq))
+            procs.append(proc)
+            proc.start()
+
+        # train
+        step = 0
+        while step < self.max_train_steps:
+            # start collecting data
+            for start in startqs:
+                start.put(1)
+            # wait for the agents to finish getting data
+            for stop in stopqs:
+                stop.get()
+            # update!
+            metrics = {}
+            step += 1
+            # callbacks
+            metrics['states'] = rollout['states'].cpu()
+            metrics['unmasked_states'] = rollout['unmasked_states'].cpu()
+            metrics['glimpse_actions'] = rollout['glimpse_actions'].cpu()
+            metrics['actions'] = rollout['actions'].cpu()
+            metrics['rewards'] = rollout['rewards'].cpu()
+            metrics['dones'] = rollout['dones'].cpu()
+            for callback in self.callbacks:
+                callback.on_step_end(step, metrics)
+
+        # end by shutting down processes
+        for p in procs:
+            p.terminate()
+
+
 class DMMAgent():
     def __init__(self, algorithm, policy, nb_threads, nb_rollout_steps,
                  max_env_steps, state_shape, test_freq, frame_stack, obs_shape,
@@ -227,8 +390,8 @@ class DMMAgent():
         self.map.share_memory()
         self.optimizer = optim.Adam(self.map.parameters(), lr=1e-4)
         # create glimpse agent
-        glimpse_policy_network = PolicyFunction_21_84(channels=state_shape[0] + 1)
-        glimpse_value_network = ValueFunction(channels=state_shape[0] + 1, input_size=state_shape[1])
+        glimpse_policy_network = PolicyFunction_21_84(channels=state_shape[0])
+        glimpse_value_network = ValueFunction(channels=state_shape[0], input_size=state_shape[1])
         glimpse_policy_network.share_memory()
         glimpse_value_network.share_memory()
         self.glimpse_agent = GlimpseAgent(
@@ -288,7 +451,7 @@ class DMMAgent():
                     if done:
                         self.map.reset()
                         # starting glimpse location
-                        glimpse_logits = self.glimpse_agent.pi(torch.cat([self.map.map.detach(), self.map.recency.detach()], dim=1))
+                        glimpse_logits = self.glimpse_agent.pi(self.map.map.detach())
                         glimpse_action = self.glimpse_agent.policy(glimpse_logits).detach()
                         glimpse_action_clipped = self.glimpse_agent.norm_and_clip(glimpse_action.cpu().numpy())
                         obs, unmasked_obs, mask = self.env.reset(loc=glimpse_action_clipped)
@@ -312,7 +475,7 @@ class DMMAgent():
                     # no need to store gradient information for rollouts
                     self.map.detach()
                     # glimpse agent decides where to look after map has stepped
-                    glimpse_logits = self.glimpse_agent.pi(torch.cat([self.map.map.detach(), self.map.recency.detach()], dim=1))
+                    glimpse_logits = self.glimpse_agent.pi(self.map.map.detach())
                     glimpse_action = self.glimpse_agent.policy(glimpse_logits).detach()
                     glimpse_action_clipped = self.glimpse_agent.norm_and_clip(glimpse_action.cpu().numpy())
                     # step!
@@ -349,7 +512,7 @@ class DMMAgent():
                 idx = startq.get()
                 self.map.reset()
                 # starting glimpse location
-                glimpse_logits = self.glimpse_agent.pi(torch.cat([self.map.map.detach(), self.map.recency.detach()], dim=1))
+                glimpse_logits = self.glimpse_agent.pi(self.map.map.detach())
                 glimpse_action = self.glimpse_agent.policy(glimpse_logits).detach()
                 glimpse_action = glimpse_action.cpu().numpy()
                 glimpse_action_clipped = self.glimpse_agent.norm_and_clip(glimpse_action)
@@ -362,7 +525,7 @@ class DMMAgent():
                     # take a step in the environment!
                     state = self.map.map.detach()
                     action = self.policy(pi(state), test=True).detach()
-                    glimpse_logits = self.glimpse_agent.pi(torch.cat([self.map.map.detach(), self.map.recency.detach()], dim=1))
+                    glimpse_logits = self.glimpse_agent.pi(self.map.map.detach())
                     glimpse_action = self.glimpse_agent.policy(glimpse_logits).detach()
                     glimpse_action = glimpse_action.cpu().numpy()
                     glimpse_action_clipped = self.glimpse_agent.norm_and_clip(glimpse_action)
@@ -635,7 +798,7 @@ class DMMAgent():
                     self.optimizer.step()
                     # and update the glimpse agent
                     if samples_added > 1.2 * self.dmm_train_delay:
-                        self.glimpse_agent.update(torch.cat([self.map.map.detach(), self.map.recency.detach()], dim=1), dones, metrics, scope='glimpse')
+                        self.glimpse_agent.update(self.map.map.detach(), dones, metrics, scope='glimpse')
                     self.glimpse_agent.reset()
             step += 1
             # test
