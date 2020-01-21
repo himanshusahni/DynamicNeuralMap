@@ -8,6 +8,7 @@ from pytorch_rl.utils import AverageMeter
 
 from dynamicmap import DynamicMap
 from networks import *
+from utils import MSEMasked
 
 import numpy as np
 from collections import deque
@@ -80,7 +81,7 @@ class GlimpseAgent():
         rewards = torch.cat([reward.unsqueeze(dim=1) for reward in self.rewards], dim=1)
         dones = torch.cat([done.unsqueeze(dim=1) for done in self.dones], dim=1)
         exp = (states, actions, rewards, dones)
-        loss = self.a2c.update(exp, final_state, metrics, scope)
+        loss = self.a2c.update(exp, final_state, step=False, metrics=metrics, scope=scope)
 
     def create_attn_mask(self, loc):
         """create a batched mask out of batched attention locations"""
@@ -261,81 +262,119 @@ class DMMAgent():
                 nb_actions=4,
                 batchsize=1,
                 device=device)
-            self.map.write_model = map.write_model
-            self.map.step_model = map.step_model
-            self.map.reconstruction_model= map.reconstruction_model
-            self.map.blend_model = map.blend_model
-            self.map.agent_step_model = map.agent_step_model
+            self.map.to(device)
+            self.map.share_memory()
             # similarly, create this thread's own glimpse agent
+            glimpse_policy_network = PolicyFunction_21_84(channels=map.channels).to(device)
+            glimpse_value_network = ValueFunction(channels=map.channels, input_size=map.size).to(device)
+            glimpse_policy_network.share_memory()
+            glimpse_value_network.share_memory()
             self.glimpse_agent = GlimpseAgent(
                 output_size=glimpse_agent.output_size,
                 attn_size=glimpse_agent.attn_size,
                 batchsize=1,
-                policy_network=glimpse_agent.policy_network,
-                value_network=glimpse_agent.value_network,
+                policy_network=glimpse_policy_network,
+                value_network=glimpse_value_network,
                 device=device)
+            self.mse = MSEMasked()
+            self.mse_unmasked = nn.MSELoss()
+
+        def syncweights(self, map, glimpse_agent):
+            """sync this threads dynamic map to the master"""
+            # sync map first
+            for target_param, param in zip(
+                    map.parameters(),
+                    self.map.parameters()):
+                param.data.copy_(target_param.data)
+            # now glimpse agent
+            for target_param, param in zip(
+                    glimpse_agent.policy_network.parameters(),
+                    self.glimpse_agent.policy_network.parameters()):
+                param.data.copy_(target_param.data)
+            for target_param, param in zip(
+                    glimpse_agent.value_network.parameters(),
+                    self.glimpse_agent.value_network.parameters()):
+                param.data.copy_(target_param.data)
+
+        def reset_grad(self):
+            self.map.write_model.zero_grad()
+            self.map.reconstruction_model.zero_grad()
+            self.map.blend_model.zero_grad()
+            self.map.step_model.zero_grad()
+            self.map.agent_step_model.zero_grad()
+            self.glimpse_agent.policy_network.zero_grad()
+            self.glimpse_agent.value_network.zero_grad()
 
         def run(self, pi, env, startq, stopq):
             from phys_env import phys_env
             self.env = env
             self.env.env = phys_env.PhysEnv()
-            self.buffer_idx = 0
             done = True
             ep_len = 0
             while True:
+                # reset gradients
+                self.reset_grad()
                 startq.get()
                 avg_ep_len = AverageMeter(history=100)
                 for step in range(self.nb_rollout):
                     if done:
-                        self.map.reset()
-                        # starting glimpse location
-                        glimpse_logits = self.glimpse_agent.pi(self.map.map.detach())
-                        glimpse_action = self.glimpse_agent.policy(glimpse_logits).detach()
-                        glimpse_action_clipped = self.glimpse_agent.norm_and_clip(glimpse_action.cpu().numpy())
-                        obs, unmasked_obs, mask = self.env.reset(loc=glimpse_action_clipped)
-                        # write observation to map
-                        self.map.write(obs.unsqueeze(dim=0), mask, 1 - mask)
-                        state = self.map.map.detach()
                         if ep_len > 0:
+                            # first calculate gradients for glimpse agent!
+                            self.glimpse_agent.update(self.map.map.detach(), dones=torch.from_numpy(np.array([1,])).to(self.device), metrics=None, scope='')
+                            # now for map
+                            loss.backward()
                             avg_ep_len.update(ep_len)
+                        # now reset map and start new episode
+                        loss = 0
+                        self.map.reset()
+                        self.glimpse_agent.reset()
                         ep_len = 0
-                    # add attention related observations to buffer
-                    self.buffer['obs'][self.t, self.buffer_idx] = obs
-                    self.buffer['unmasked_obs'][self.t, self.buffer_idx] = unmasked_obs
-                    self.buffer['masks'][self.t, self.buffer_idx] = mask
-                    self.buffer['glimpse_actions'][self.t, self.buffer_idx] = glimpse_action
+                        post_step_reconstruction = self.map.reconstruct()
+                        # starting glimpse location
+                        glimpse_action_clipped = self.glimpse_agent.step(self.map.map.detach())
+                        obs, unmasked_obs, mask = self.env.reset(loc=glimpse_action_clipped)
+                        # reward glimpse agent!
+                        post_step_loss = self.mse(post_step_reconstruction, obs, mask)
+                        self.glimpse_agent.reward(post_step_loss.detach() / 10)
+                        # write observation to map
+                        write_cost = self.map.write(obs.unsqueeze(dim=0), mask, 1 - mask)
+                        # post-write reconstruction loss
+                        post_write_reconstruction = self.map.reconstruct()
+                        post_write_loss = self.mse(post_write_reconstruction, obs, mask)
+                        state = self.map.map.detach()
                     # prepare to take a step in the environment!
                     action = self.policy(pi(state)).detach()
                     # step the map forward according to agent action
                     onehot_action = torch.zeros((1, 4)).to(self.device)
                     onehot_action[0, action] = 1
-                    self.map.step(onehot_action)
-                    # no need to store gradient information for rollouts
-                    self.map.detach()
+                    step_cost = self.map.step(onehot_action)
+                    # add up all the losses
+                    loss += 0.01 * (write_cost + step_cost) + post_write_loss.mean() + post_step_loss.mean()
+                    # new loss cycle
+                    post_step_reconstruction = self.map.reconstruct()
                     # glimpse agent decides where to look after map has stepped
-                    glimpse_logits = self.glimpse_agent.pi(self.map.map.detach())
-                    glimpse_action = self.glimpse_agent.policy(glimpse_logits).detach()
-                    glimpse_action_clipped = self.glimpse_agent.norm_and_clip(glimpse_action.cpu().numpy())
+                    glimpse_action_clipped = self.glimpse_agent.step(self.map.map.detach())
                     # step!
                     (next_obs, next_unmasked_obs, next_mask), r, done, _ = \
                         self.env.step(action.cpu().numpy(), loc=glimpse_action_clipped)
+                    # reward glimpse agent!
+                    post_step_loss = self.mse(post_step_reconstruction, next_obs, next_mask)
+                    self.glimpse_agent.reward(post_step_loss.detach() / 10)
                     # add outcomes to rollout buffer for training agent
                     self.rollout['states'][self.t, step] = state
                     self.rollout['actions'][self.t, step] = action
                     self.rollout['rewards'][self.t, step] = r
                     self.rollout['dones'][self.t, step] = float(done)
-                    # add some of the info to map buffer as well
-                    self.buffer['actions'][self.t, self.buffer_idx] = action
-                    self.buffer['rewards'][self.t, self.buffer_idx] = r
-                    self.buffer['dones'][self.t, self.buffer_idx] = float(done)
                     # move to next step
                     obs = next_obs
                     unmasked_obs = next_unmasked_obs
                     mask = next_mask
                     # write observation to map
-                    self.map.write(obs.unsqueeze(dim=0), mask, 1 - mask)
+                    write_cost = self.map.write(obs.unsqueeze(dim=0), mask, 1 - mask)
+                    # post-write reconstruction loss
+                    post_write_reconstruction = self.map.reconstruct()
+                    post_write_loss = self.mse(post_write_reconstruction, obs, mask)
                     state = self.map.map.detach()
-                    self.buffer_idx = (self.buffer_idx + 1) % self.buffer_len
                     ep_len += 1
                 # finally add the next state into the states buffer as well to do value estimation
                 self.rollout['states'][self.t, self.nb_rollout] = state
@@ -522,6 +561,7 @@ class DMMAgent():
         # make the policy available to all processes
         self.algorithm.actor_critic.share_memory()
         procs = []
+        clones = []
         for t in range(self.nb_threads):
             startq = mp.Queue(1)
             startqs.append(startq)
@@ -541,7 +581,8 @@ class DMMAgent():
             )
             proc = mp.Process(target=c.run, args=(self.algorithm.pi, make_env(), startq, stopq))
             procs.append(proc)
-            proc.start()
+            clones.append(c)
+            # proc.start()
         # have a thread for testing
         test_startq = mp.Queue(1)
         test_stopq = mp.Queue(1)
@@ -598,7 +639,8 @@ class DMMAgent():
             # wait for the agents to finish getting data
             for stop in stopqs:
                 stop.get()
-
+            for i, c in enumerate(clones):
+                c.run(self.algorithm.pi, make_env(), startqs[i], stopqs[i])
             samples_added += self.nb_rollout_steps * self.nb_threads
             # update PPO!
             if samples_added > self.agent_train_delay:
@@ -611,36 +653,37 @@ class DMMAgent():
 
             # train DMM!
             if samples_added > self.dmm_train_delay:
-                mean_seq_len = metrics['agent/avg_ep_len'].avg
-                nb_dmm_updates = int(self.nb_threads * self.nb_rollout_steps // (mean_seq_len * self.batchsize))
-                # picking a curriculum for sequence length
-                quartiles = np.percentile(np.array(metrics['agent/avg_ep_len'].q), [25, 75])
-                quartiles = [np.floor(quartiles[0]), np.ceil(quartiles[1])]
-                for _ in range(nb_dmm_updates):
-                    # max seq length is preset
-                    seqlen = min(maxseqlen, np.random.randint(*quartiles))
-                    glimpses, masks, unmasked_glimpses, glimpse_actions, actions, rewards, dones = \
-                        self.create_batch(buffer, samples_added, seqlen, metrics)
-                    self.optimizer.zero_grad()
-                    loss = self.map.lossbatch(
-                        state_batch=glimpses,
-                        action_batch=actions,
-                        reward_batch=rewards,
-                        glimpse_agent=self.glimpse_agent,
-                        training_metrics=metrics,
-                        mask_batch=masks,
-                        unmasked_state_batch=unmasked_glimpses,
-                        glimpse_action_batch=glimpse_actions)
-                    # propagate loss back through entire training sequence
-                    loss.backward()
-                    self.optimizer.step()
-                    # if step % 10000 == 0:
-                    #     for param_group in self.optimizer.param_groups:
-                    #         param_group['lr'] = self.lr * 0.1
-                    # and update the glimpse agent
-                    if samples_added > 1.2 * self.dmm_train_delay:
-                        self.glimpse_agent.update(self.map.map.detach(), dones, metrics, scope='glimpse')
-                    self.glimpse_agent.reset()
+                self.optimizer.zero_grad()
+                self.glimpse_agent.policy_network.zero_grad()
+                self.glimpse_agent.value_network.zero_grad()
+                # collect gradients from all clones
+                for c in clones:
+                    for target_param, param in zip(
+                            c.map.parameters(),
+                            self.map.parameters()):
+                        param.grad.add_(target_param.grad)
+                    # now glimpse agent
+                    for target_param, param in zip(
+                            c.glimpse_agent.policy_network.parameters(),
+                            self.glimpse_agent.policy_network.parameters()):
+                        param.grad.add_(target_param.grad)
+                    for target_param, param in zip(
+                            c.glimpse_agent.value_network.parameters(),
+                            self.glimpse_agent.value_network.parameters()):
+                        param.grad.add_(target_param.grad)
+                # now step
+                self.optimizer.step()
+                # if step % 10000 == 0:
+                #     for param_group in self.optimizer.param_groups:
+                #         param_group['lr'] = self.lr * 0.1
+                # and update the glimpse agent
+                if samples_added > 1.2 * self.dmm_train_delay:
+                    self.glimpse_agent.a2c.pi_optimizer.step()
+                    self.glimpse_agent.a2c.V_optimizer.step()
+                # now copy parameters back to clones
+                for c in clones:
+                    c.syncweights(self.map, self.glimpse_agent)
+
             step += 1
             # test
             if step % self.test_freq == 0:
