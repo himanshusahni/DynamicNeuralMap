@@ -80,7 +80,7 @@ class GlimpseAgent():
         rewards = torch.cat([reward.unsqueeze(dim=1) for reward in self.rewards], dim=1)
         dones = torch.cat([done.unsqueeze(dim=1) for done in self.dones], dim=1)
         exp = (states, actions, rewards, dones)
-        loss = self.a2c.update(exp, final_state, metrics, scope)
+        loss = self.a2c.update(exp, final_state, True, metrics, scope)
 
     def create_attn_mask(self, loc):
         """create a batched mask out of batched attention locations"""
@@ -143,7 +143,7 @@ class AttentionConstrainedEnvironment:
         glimpse = state * obs_mask
         return glimpse, state, obs_mask
 
-    def reset(self, loc=None):
+    def reset(self, loc=None, step=None):
         """
         starts a new episode
         :param loc: location of first glimpse, if None, chosen randomly
@@ -151,7 +151,7 @@ class AttentionConstrainedEnvironment:
         """
         self.ep_step = 0
         # first reset the underlying environment and get a state
-        state = self.env.reset()
+        state = self.env.reset(step)
         state = self.preprocess(state)
         if loc is None:
             # pick a random location
@@ -283,7 +283,7 @@ class DMMAgent():
             done = True
             ep_len = 0
             while True:
-                startq.get()
+                global_step = startq.get()
                 avg_ep_len = AverageMeter(history=100)
                 for step in range(self.nb_rollout):
                     if done:
@@ -292,7 +292,7 @@ class DMMAgent():
                         glimpse_logits = self.glimpse_agent.pi(self.map.map.detach())
                         glimpse_action = self.glimpse_agent.policy(glimpse_logits).detach()
                         glimpse_action_clipped = self.glimpse_agent.norm_and_clip(glimpse_action.cpu().numpy())
-                        obs, unmasked_obs, mask = self.env.reset(loc=glimpse_action_clipped)
+                        obs, unmasked_obs, mask = self.env.reset(loc=glimpse_action_clipped, step=global_step)
                         # write observation to map
                         self.map.write(obs.unsqueeze(dim=0), mask, 1 - mask)
                         state = self.map.map.detach()
@@ -594,7 +594,7 @@ class DMMAgent():
         while step < self.max_train_steps:
             # start collecting data
             for start in startqs:
-                start.put(1)
+                start.put(step)
             # wait for the agents to finish getting data
             for stop in stopqs:
                 stop.get()
@@ -634,14 +634,14 @@ class DMMAgent():
                     # propagate loss back through entire training sequence
                     loss.backward()
                     self.optimizer.step()
-                    # if step % 10000 == 0:
-                    #     for param_group in self.optimizer.param_groups:
-                    #         param_group['lr'] = self.lr * 0.1
                     # and update the glimpse agent
                     if samples_added > 1.2 * self.dmm_train_delay:
                         self.glimpse_agent.update(self.map.map.detach(), dones, metrics, scope='glimpse')
                     self.glimpse_agent.reset()
             step += 1
+            if step == 20000:
+                for param_group in self.optimizer.param_groups:
+                    param_group['lr'] = self.lr * 0.01
             # test
             if step % self.test_freq == 0:
                 test_startq.put(step // self.test_freq)
