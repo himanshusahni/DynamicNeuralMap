@@ -23,7 +23,7 @@ class GlimpseAgent():
         self.policy = policies.MultinomialPolicy()
         self.device = device
         self.a2c = algorithms.A2C(policy_network, value_network, self.policy, device, gamma=0.9,
-                                  entropy_weighting=.1)
+                                  entropy_weighting=0.01)
         self.pi = self.a2c.pi
 
         attn_span = range(-(self.attn_size// 2), self.attn_size// 2 + 1)
@@ -215,91 +215,100 @@ class MultithreadedAttentionConstrainedRolloutAgent:
     If policy is not given, acts randomly
     """
     def __init__(self, nb_threads, nb_rollout_steps, max_env_steps, state_shape,
-                 frame_stack, device, callbacks, pi=None, policy=None):
+                 attn_size, frame_stack, callbacks, pi=None, policy=None):
         self.nb_threads = nb_threads
         self.nb_rollout_steps = nb_rollout_steps
         self.max_env_steps = max_env_steps
         self.max_train_steps = int(max_env_steps // (nb_threads * nb_rollout_steps))
         self.state_shape = state_shape
+        self.attn_size = attn_size
         self.k = frame_stack
-        self.device = device
         self.callbacks = callbacks
         self.pi = pi
         self.policy = policy
 
     class Clone:
-        def __init__(self, t, preprocess, nb_rollout, k, device, rollout, policy):
+        def __init__(self, t, nb_rollout, k, state_shape, attn_size, rollout, policy):
             """create a new environment"""
             self.t = t
             self.nb_rollout = nb_rollout
             self.rollout = rollout
-            self.preprocess = preprocess
             self.k = k
-            self.device = device
             self.policy = policy
+            self.attn_size = attn_size
+            self.state_shape = state_shape
 
         def run(self, pi, env, startq, stopq):
             from phys_env import phys_env
-            self.env = phys_env.PhysEnv()
-            # self.env = env
-            # self.env.env = phys_env.PhysEnv()
+            self.env = env
+            self.env.env = phys_env.PhysEnv()
+            self.env.action_space = self.env.env.action_space
             done = True
             while True:
                 startq.get()
                 for step in range(self.nb_rollout):
                     if done:
-                        obs, unmased_obs, mask = self.preprocess(self.env.reset()).to(self.device)
+                        glimpse_action = np.random.randint(0, self.state_shape[1] * self.state_shape[2])
+                        loc = np.unravel_index(glimpse_action, (self.state_shape[1], self.state_shape[2]))
+                        # clip to avoid edges
+                        loc = np.clip(loc, self.attn_size // 2, self.state_shape[1] - 1 - self.attn_size// 2).astype(np.int64)
+                        obs, unmasked_obs, mask = self.env.reset(loc=loc)
                         stateq = deque(
-                            [torch.zeros(obs.shape).to(self.device)
+                            [torch.zeros_like(obs)
                              for _ in range(self.k-1)], maxlen=self.k)
                         stateq.append(obs)
                         state = torch.cat(list(stateq), dim=0)
-                    if self.policy:
-                        action = self.policy(pi(state.unsqueeze(dim=0)))
-                        (next_obs, next_unmasked_obs, next_mask), r, done, _ = \
-                            self.env.step(action.detach().cpu().numpy())
-                    else:
-                        action = self.env.action_space.sample()
-                        (next_obs, next_unmasked_obs, next_mask), r, done, _ = \
-                            self.env.step(action)
                     self.rollout['states'][self.t, step] = obs
                     self.rollout['unmasked_states'][self.t, step] = unmasked_obs
                     self.rollout['glimpse_actions'][self.t, step] = glimpse_action
+                    glimpse_action = np.random.randint(0, self.state_shape[1] * self.state_shape[2])
+                    loc = np.unravel_index(glimpse_action, (self.state_shape[1], self.state_shape[2]))
+                    # clip to avoid edges
+                    loc = np.clip(loc, self.attn_size // 2, self.state_shape[1] - 1 - self.attn_size// 2).astype(np.int64)
+                    if self.policy:
+                        action = self.policy(pi(state.unsqueeze(dim=0)))
+                        (next_obs, next_unmasked_obs, next_mask), r, done, _ = \
+                            self.env.step(action.detach().cpu().numpy(), loc=loc)
+                    else:
+                        action = self.env.action_space.sample()
+                        (next_obs, next_unmasked_obs, next_mask), r, done, _ = \
+                            self.env.step(action, loc=loc)
                     self.rollout['actions'][self.t, step] = action
                     self.rollout['rewards'][self.t, step] = r
                     self.rollout['dones'][self.t, step] = float(done)
-                    obs = self.preprocess(next_obs).to(self.device)
+                    obs = next_obs
+                    unmasked_obs = next_unmasked_obs
                     stateq.append(obs)
                     state = torch.cat(list(stateq), dim=0)
                 # finally add the next state into the states buffer as well to do value estimation
                 self.rollout['states'][self.t, self.nb_rollout] = obs
                 stopq.put(self.t)
 
-    def train(self, make_env, preprocess):
+    def train(self, make_env):
         # create shared data between agent clones
         rollout = {
             'states': torch.empty(
                 self.nb_threads,
                 self.nb_rollout_steps+1,
-                *self.state_shape).to(self.device).share_memory_(),
+                *self.state_shape),
             'unmasked_states': torch.empty(
                 self.nb_threads,
                 self.nb_rollout_steps,
-                *self.state_shape).to(self.device).share_memory_(),
+                *self.state_shape),
             'glimpse_actions': torch.empty(
                 self.nb_threads,
                 self.nb_rollout_steps,
-                dtype=torch.long).to(self.device).share_memory_(),
+                dtype=torch.long),
             'actions': torch.empty(
                 self.nb_threads,
                 self.nb_rollout_steps,
-                dtype=torch.long).to(self.device).share_memory_(),
+                dtype=torch.long),
             'rewards': torch.empty(
                 self.nb_threads,
-                self.nb_rollout_steps).to(self.device).share_memory_(),
+                self.nb_rollout_steps),
             'dones': torch.empty(
                 self.nb_threads,
-                self.nb_rollout_steps).to(self.device).share_memory_(),
+                self.nb_rollout_steps),
         }
         # stopqs and startqs tell when the actors should collect rollouts
         stopqs = []
@@ -311,7 +320,7 @@ class MultithreadedAttentionConstrainedRolloutAgent:
             stopq = mp.Queue(1)
             stopqs.append(stopq)
             c = self.Clone(
-                t, preprocess, self.nb_rollout_steps, self.k, self.device, rollout, self.policy)
+                t, self.nb_rollout_steps, self.k, self.state_shape, self.attn_size, rollout, self.policy)
             proc = mp.Process(target=c.run, args=(self.pi, make_env(), startq, stopq))
             procs.append(proc)
             proc.start()
@@ -329,12 +338,12 @@ class MultithreadedAttentionConstrainedRolloutAgent:
             metrics = {}
             step += 1
             # callbacks
-            metrics['states'] = rollout['states'].cpu()
-            metrics['unmasked_states'] = rollout['unmasked_states'].cpu()
-            metrics['glimpse_actions'] = rollout['glimpse_actions'].cpu()
-            metrics['actions'] = rollout['actions'].cpu()
-            metrics['rewards'] = rollout['rewards'].cpu()
-            metrics['dones'] = rollout['dones'].cpu()
+            metrics['dump/states'] = rollout['states']
+            metrics['dump/unmasked_states'] = rollout['unmasked_states']
+            metrics['dump/glimpse_actions'] = rollout['glimpse_actions']
+            metrics['dump/actions'] = rollout['actions']
+            metrics['dump/rewards'] = rollout['rewards']
+            metrics['dump/dones'] = rollout['dones']
             for callback in self.callbacks:
                 callback.on_step_end(step, metrics)
 
