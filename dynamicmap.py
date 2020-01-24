@@ -40,7 +40,6 @@ class DynamicMap():
         reset the map to beginning of episode
         """
         self.map = torch.zeros((self.batchsize, self.channels, self.size, self.size)).to(self.device)
-        self.recency = torch.zeros((self.batchsize, 1, self.size, self.size)).to(self.device)
 
     def detach(self):
         """
@@ -80,7 +79,6 @@ class DynamicMap():
         map_mask, minus_map_mask = self.maskobs2maskmap(obs_mask, minus_obs_mask)
         w *= map_mask
         self.map = self.map * minus_map_mask + w
-        self.recency = map_mask + self.recency * minus_map_mask
 
         # cost of writing
         return w.abs().mean()
@@ -101,7 +99,6 @@ class DynamicMap():
             new_map[:, self.channels//3:2*self.channels//3, :, :] = dynamic
             new_map[:, 2*self.channels//3:, :, :] = agent_dynamic
         self.map = new_map
-        self.recency *= 0.9
         return cost
 
     def reconstruct(self):
@@ -137,10 +134,10 @@ class DynamicMap():
             else:
                 obs_mask = mask_batch[t]
                 minus_obs_mask = 1 - obs_mask
-                glimpse_agent.states.append(torch.cat([self.map.detach(), self.recency.detach()], dim=1))
+                glimpse_agent.states.append(self.map.detach())
                 glimpse_agent.actions.append(glimpse_action_batch[t])
             post_step_loss = mse(post_step_reconstruction, state_batch[t], obs_mask)
-            glimpse_agent.reward(post_step_loss.detach()/10)
+            glimpse_agent.reward(post_step_loss.detach())
             post_step_loss = post_step_loss.mean()
             if unmasked_state_batch is None:
                 recontruction_loss = mse_unmasked(post_step_reconstruction, state_batch[t]).mean()
