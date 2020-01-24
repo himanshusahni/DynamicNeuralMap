@@ -14,13 +14,14 @@ from phys_env.phys_env import PhysEnv
 
 from dynamicmap import DynamicMap
 import utils
-from rl import GlimpseAgent, AttentionConstrainedEnvironment
+from rl import OffPolicyGlimpseAgent, AttentionConstrainedEnvironment
+from networks import PolicyFunction_21_84
 
 # torch.manual_seed(123)
 # np.random.seed(123)
 
-d = '/home/himanshu/experiments/DynamicNeuralMap/PhysEnv/RL_DMM_refactored_recency/'
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+d = '/home/himanshu/experiments/DynamicNeuralMap/PhysEnv/RL_DMM_refactored_offpolicyglimpse2/'
+device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 attn_size = 21
 size = 84
 map = DynamicMap(
@@ -32,7 +33,7 @@ map = DynamicMap(
     nb_actions=4,
     device=device)
 
-for step in range(3800, 3900, 100):
+for step in range(200, 300, 100):
     ac = torch.load(os.path.join(d, 'actor_critic_{}.pth'.format(step)), map_location=device)
 
     model_dir = d
@@ -41,17 +42,16 @@ for step in range(3800, 3900, 100):
     map.to(device)
     path = os.path.join(model_dir, 'glimpse_{}.pth'.format(step))
     glimpsenet = torch.load(path, map_location='cpu')
-    glimpse_pi = glimpsenet['policy_network'].to(device)
-    glimpse_V = glimpsenet['value_network'].to(device)
-    # glimpse_pi = glimpsenet.policy_head
-    # glimpse_V = glimpsenet.value_head
-    glimpse_agent = GlimpseAgent(
+    glimpse_q = glimpsenet['q'].to(device)
+    glimpse_agent = OffPolicyGlimpseAgent(
         output_size=84,
         attn_size=attn_size,
         batchsize=1,
-        policy_network=glimpse_pi,
-        value_network=glimpse_V,
-        device=device)
+        q_arch=PolicyFunction_21_84,
+        channels=48,
+        device=device, )
+    glimpse_agent.dqn.q = glimpse_q
+    glimpse_agent.pi = glimpse_q
     # glimpse_agent.load(glimpse_pi, glimpse_V)
     policy = MultinomialPolicy()
     env = AttentionConstrainedEnvironment(env_size=84, attn_size=21, device=device)
@@ -62,15 +62,17 @@ for step in range(3800, 3900, 100):
 
     map.reset()
     # starting glimpse location
-    glimpse_logits = glimpse_agent.pi(torch.cat([map.map.detach(), map.recency.detach()], dim=1))
-    glimpse_action = glimpse_agent.policy(glimpse_logits).detach()
+    glimpse_logits = glimpse_agent.pi(map.map.detach())
+    glimpse_action = glimpse_agent.policy(glimpse_logits, test=False).detach()
     glimpse_action_clipped = glimpse_agent.norm_and_clip(glimpse_action.cpu().numpy())
+    print(glimpse_action_clipped)
     obs, _, mask = env.reset(loc=glimpse_action_clipped)
     done = False
     overall_error = 0
     for i in range(steps):
         # first the display heatmap used for attention
         heatmap = F.softmax(glimpse_logits, dim=-1).view(size, size).detach().cpu().numpy()
+        import pdb; pdb.set_trace()
         axarr[i, 0].imshow(heatmap)
         # display full environment image
         axarr[i, 1].imshow(env.env.render())
@@ -87,9 +89,7 @@ for step in range(3800, 3900, 100):
         # take a step in the environment!
         state = map.map.detach()
         logits = ac.pi(state)
-        print(policy.probs(logits))
-        print(ac.V(state))
-        action = policy(logits)
+        action = policy(logits, test=True)
         print(action.detach().cpu().numpy())
         # step the map forward according to agent action
         onehot_action = torch.zeros((1, 4)).to(device)
@@ -98,9 +98,12 @@ for step in range(3800, 3900, 100):
         # no need to store gradient information for rollouts
         map.detach()
         # glimpse agent decides where to look after map has stepped
-        glimpse_logits = glimpse_agent.pi(torch.cat([map.map.detach(), map.recency.detach()], dim=1))
-        glimpse_action = glimpse_agent.policy(glimpse_logits).detach()
+        glimpse_logits = glimpse_agent.pi(map.map.detach())
+        glimpse_action = glimpse_agent.policy(glimpse_logits, test=False).detach()
+        print(glimpse_agent.policy.entropy(glimpse_logits))
+        print(glimpse_logits)
         glimpse_action_clipped = glimpse_agent.norm_and_clip(glimpse_action.cpu().numpy())
+        print(glimpse_action_clipped)
         (next_obs, _, next_mask), r, done, _ = env.step(action.cpu().numpy(), loc=glimpse_action_clipped)
         # next display reconstruction of what map sees
         reconstruction = utils.postprocess(map.reconstruct().detach().cpu().numpy()).squeeze()

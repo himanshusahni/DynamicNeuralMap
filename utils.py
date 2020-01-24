@@ -23,19 +23,23 @@ class SequenceDataset(Dataset):
 
         self.ep_mapping = []
         self.ep_steps = [0]
+        self.ep_lengths = []
         for ep in range(self.nb_eps):
             ep_dir = os.path.join(data_dir, str(ep))
             # nb samples is episode length - 1 bcs. predicting next state
             nb_samples = len([f for f in os.listdir(ep_dir)
-                              if f.endswith('.pt') and ('reward' not in f) and 'action' not in f]) - 1
+                              if f.endswith('.pt') and ('reward' not in f) and 'action' not in f and 'unmasked' not in f]) - 1
             self.ep_mapping += [ep]*nb_samples
             self.ep_steps.append(self.ep_steps[-1] + nb_samples)
+            self.ep_lengths.append(nb_samples)
+
+        self.mean_ep_len = sum(self.ep_lengths) // len(self.ep_lengths)
+        self.percentiles = np.percentile(self.ep_lengths, [25, 75])
+        self.percentiles = (max(5, np.floor(self.percentiles[0])), np.ceil(self.percentiles[1])+1)
+        self.seq_len = np.random.randint(*self.percentiles)
 
     def __len__(self):
         return self.nb_eps
-
-    def set_seqlen(self, seq_len):
-        self.seq_len = seq_len
 
     def __getitem__(self, ep):
         """get a random snippet from this episode"""
@@ -48,32 +52,47 @@ class SequenceDataset(Dataset):
         start_idx = max(0, end_idx-self.seq_len)
         # load the data from disk
         imgs = []
+        unmasked_imgs = []
         for idx in range(start_idx, end_idx):
             img_name = os.path.join(
                 self.demo_dir,
                 str(ep),
                 '{}.pt'.format(idx))
             imgs.append(torch.load(img_name))
+            unmasked_img_name = os.path.join(
+                self.demo_dir,
+                str(ep),
+                'unmasked{}.pt'.format(idx))
+            unmasked_imgs.append(torch.load(unmasked_img_name))
         imgs = torch.cat([img.unsqueeze(dim=0) for img in imgs])
+        unmasked_imgs = torch.cat([img.unsqueeze(dim=0) for img in unmasked_imgs])
         actions = torch.load(os.path.join(self.demo_dir, str(ep),'actions.pt'))
         actions = actions[start_idx:end_idx]
+        glimpse_actions = torch.load(os.path.join(self.demo_dir, str(ep),'glimpse_actions.pt'))
+        glimpse_actions = glimpse_actions[start_idx:end_idx]
         rewards = torch.load(os.path.join(self.demo_dir, str(ep),'rewards.pt'))
         rewards = rewards[start_idx:end_idx]
         sample = {'imgs': imgs,
+                  'unmasked_imgs': unmasked_imgs,
                   'actions': actions,
+                  'glimpse_actions': glimpse_actions,
                   'rewards': rewards,
                   }
         return sample
 
-
-def time_collate(batch):
-    imgs = torch.cat([sample['imgs'].unsqueeze(dim=0) for sample in batch])
-    imgs = imgs.transpose(0, 1)
-    actions = torch.cat([sample['actions'].unsqueeze(dim=0) for sample in batch])
-    actions = actions.transpose(0, 1)
-    rewards = torch.cat([sample['rewards'].unsqueeze(dim=0) for sample in batch])
-    rewards = rewards.transpose(0, 1)
-    return imgs, actions, rewards
+    def time_collate(self, batch):
+        imgs = torch.cat([sample['imgs'].unsqueeze(dim=0) for sample in batch])
+        imgs = imgs.transpose(0, 1)
+        unmasked_imgs = torch.cat([sample['unmasked_imgs'].unsqueeze(dim=0) for sample in batch])
+        unmasked_imgs= unmasked_imgs.transpose(0, 1)
+        actions = torch.cat([sample['actions'].unsqueeze(dim=0) for sample in batch])
+        actions = actions.transpose(0, 1)
+        glimpse_actions = torch.cat([sample['glimpse_actions'].unsqueeze(dim=0) for sample in batch])
+        glimpse_actions = glimpse_actions.transpose(0, 1)
+        rewards = torch.cat([sample['rewards'].unsqueeze(dim=0) for sample in batch])
+        rewards = rewards.transpose(0, 1)
+        self.seq_len = np.random.randint(*self.percentiles)
+        return imgs, unmasked_imgs, actions, glimpse_actions, rewards
 
 def postprocess(img):
     """

@@ -11,6 +11,7 @@ from networks import *
 
 import numpy as np
 from collections import deque
+from gym import spaces
 
 class GlimpseAgent():
     """wrapper around an A2C agent for glimpse actions"""
@@ -102,13 +103,14 @@ class GlimpseAgent():
 
 class OffPolicyGlimpseAgent(GlimpseAgent):
     """Off policy version of glimpse agent using DQN"""
-    def __init__(self, output_size, attn_size, batchsize, q_arch, device):
+    def __init__(self, output_size, attn_size, batchsize, q_arch, channels, device):
         self.output_size = output_size
         self.attn_size = attn_size
         self.batchsize = batchsize
         self.policy = policies.MultinomialPolicy()
+        #self.policy = policies.EpsGreedy(1.0, 0.1, 50000, spaces.Discrete(84*84))
         self.device = device
-        self.dqn = algorithms.DQN(q_arch, gamma=0.9, target_copy_freq=100)
+        self.dqn = algorithms.DQN(q_arch, channels, self.policy, gamma=0.9, device=device)
         self.pi = self.dqn.q
 
         attn_span = range(-(self.attn_size// 2), self.attn_size// 2 + 1)
@@ -121,11 +123,13 @@ class OffPolicyGlimpseAgent(GlimpseAgent):
         """update glimpse policy using experience from this episode"""
         # designate last state of sequence as terminal for glimpse agent
         self.dones[-1][:] = dones
-        states = torch.cat(self.states, dim=0)
-        next_states = torch.cat(self.states[1:].append(final_state), dim=0)
-        actions = torch.cat(self.actions, dim=0)
-        rewards = torch.cat(self.rewards, dim=0)
-        dones = torch.cat(self.dones, dim=0)
+        states = torch.cat([state.unsqueeze(dim=1) for state in self.states], dim=1)
+        states = states.reshape(-1, *states.size()[2:])
+        next_states = torch.cat([state.unsqueeze(dim=1) for state in self.states[1:]] + [final_state.unsqueeze(dim=1)], dim=1)
+        next_states = next_states.reshape(-1, *next_states.size()[2:])
+        actions = torch.cat([action.unsqueeze(dim=1) for action in self.actions], dim=1).flatten()
+        rewards = torch.cat([reward.unsqueeze(dim=1) for reward in self.rewards], dim=1).flatten()
+        dones = torch.cat([done.unsqueeze(dim=1) for done in self.dones], dim=1).flatten()
         exp = (states, actions, next_states, rewards, dones)
         loss = self.dqn.update(exp, metrics, scope)
 
@@ -399,16 +403,16 @@ class DMMAgent():
         self.map.share_memory()
         self.optimizer = optim.Adam(self.map.parameters(), lr=1e-4)
         # create glimpse agent
-        glimpse_policy_network = PolicyFunction_21_84(channels=state_shape[0])
-        glimpse_value_network = ValueFunction(channels=state_shape[0], input_size=state_shape[1])
-        glimpse_policy_network.share_memory()
-        glimpse_value_network.share_memory()
-        self.glimpse_agent = GlimpseAgent(
+        # glimpse_policy_network = PolicyFunction_21_84(channels=state_shape[0])
+        # glimpse_value_network = ValueFunction(channels=state_shape[0], input_size=state_shape[1])
+        # glimpse_policy_network.share_memory()
+        # glimpse_value_network.share_memory()
+        self.glimpse_agent = OffPolicyGlimpseAgent(
             output_size=obs_shape[1],
             attn_size=attn_size,
             batchsize=self.batchsize,
-            policy_network=glimpse_policy_network,
-            value_network=glimpse_value_network,
+            q_arch=PolicyFunction_21_84,
+            channels=state_shape[0],
             device=device)
 
     class Clone:
@@ -438,12 +442,12 @@ class DMMAgent():
             self.map.blend_model = map.blend_model
             self.map.agent_step_model = map.agent_step_model
             # similarly, create this thread's own glimpse agent
-            self.glimpse_agent = GlimpseAgent(
+            self.glimpse_agent = OffPolicyGlimpseAgent(
                 output_size=glimpse_agent.output_size,
                 attn_size=glimpse_agent.attn_size,
                 batchsize=1,
-                policy_network=glimpse_agent.policy_network,
-                value_network=glimpse_agent.value_network,
+                q_arch=PolicyFunction_21_84,
+                channels=map.channels,
                 device=device)
 
         def run(self, pi, env, startq, stopq):
@@ -454,7 +458,7 @@ class DMMAgent():
             done = True
             ep_len = 0
             while True:
-                startq.get()
+                global_step = startq.get()
                 avg_ep_len = AverageMeter(history=100)
                 for step in range(self.nb_rollout):
                     if done:
@@ -522,7 +526,7 @@ class DMMAgent():
                 self.map.reset()
                 # starting glimpse location
                 glimpse_logits = self.glimpse_agent.pi(self.map.map.detach())
-                glimpse_action = self.glimpse_agent.policy(glimpse_logits).detach()
+                glimpse_action = self.glimpse_agent.policy(glimpse_logits, test=True).detach()
                 glimpse_action = glimpse_action.cpu().numpy()
                 glimpse_action_clipped = self.glimpse_agent.norm_and_clip(glimpse_action)
                 obs, _, mask = self.env.reset(loc=glimpse_action_clipped)
@@ -535,7 +539,7 @@ class DMMAgent():
                     state = self.map.map.detach()
                     action = self.policy(pi(state), test=True).detach()
                     glimpse_logits = self.glimpse_agent.pi(self.map.map.detach())
-                    glimpse_action = self.glimpse_agent.policy(glimpse_logits).detach()
+                    glimpse_action = self.glimpse_agent.policy(glimpse_logits, test=True).detach()
                     glimpse_action = glimpse_action.cpu().numpy()
                     glimpse_action_clipped = self.glimpse_agent.norm_and_clip(glimpse_action)
                     (next_obs, _, next_mask), r, done, _ = \
@@ -735,7 +739,7 @@ class DMMAgent():
 
         # train
         step = 0
-        seqlen = 10
+        minseqlen = 5
         maxseqlen = 25
         # gammas = {10: 0.983, 11: 0.965, 12: 0.952, 13: 0.941, 14: 0.933,
         #           15: 0.927, 16: 0.921, 17: 0.917, 18: 0.913, 19: 0.910,
@@ -749,8 +753,7 @@ class DMMAgent():
                    'agent/avg_val': AverageMeter(history=10),
                    'agent/avg_reward': AverageMeter(history=10),
                    'agent/avg_ep_len': AverageMeter(history=10),
-                   'glimpse/policy_loss': AverageMeter(history=100),
-                   'glimpse/val_loss': AverageMeter(history=100),
+                   'glimpse/loss': AverageMeter(history=100),
                    'glimpse/policy_entropy': AverageMeter(history=100),
                    'glimpse/avg_val': AverageMeter(history=100),
                    'glimpse/avg_reward': AverageMeter(history=100),
@@ -765,7 +768,7 @@ class DMMAgent():
         while step < self.max_train_steps:
             # start collecting data
             for start in startqs:
-                start.put(1)
+                start.put(step)
             # wait for the agents to finish getting data
             for stop in stopqs:
                 stop.get()
@@ -789,7 +792,7 @@ class DMMAgent():
                 quartiles = [np.floor(quartiles[0]), np.ceil(quartiles[1])]
                 for _ in range(nb_dmm_updates):
                     # max seq length is preset
-                    seqlen = min(maxseqlen, np.random.randint(*quartiles))
+                    seqlen = max(min(maxseqlen, np.random.randint(*quartiles)), minseqlen)
                     glimpses, masks, unmasked_glimpses, glimpse_actions, actions, rewards, dones = \
                         self.create_batch(buffer, samples_added, seqlen, metrics)
                     self.optimizer.zero_grad()
@@ -837,8 +840,9 @@ class DMMAgent():
         dynamic map, and ppo algorithm
         """
         return {
-            'glimpse': {'policy_network': self.glimpse_agent.policy_network,
-                        'value_network': self.glimpse_agent.value_network},
+            # 'glimpse': {'policy_network': self.glimpse_agent.policy_network,
+            #             'value_network': self.glimpse_agent.value_network},
+            'glimpse': {'q': self.glimpse_agent.dqn.q,},
             'map': {'write': self.map.write_model,
                     'step': self.map.step_model,
                     'blend': self.map.blend_model,
