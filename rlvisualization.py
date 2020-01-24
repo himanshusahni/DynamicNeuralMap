@@ -33,7 +33,9 @@ map = DynamicMap(
     nb_actions=4,
     device=device)
 
-for step in range(200, 300, 100):
+mse = torch.nn.MSELoss(reduction='none')
+mse_masked = utils.MSEMasked()
+for step in range(20000, 20100, 100):
     ac = torch.load(os.path.join(d, 'actor_critic_{}.pth'.format(step)), map_location=device)
 
     model_dir = d
@@ -57,22 +59,26 @@ for step in range(200, 300, 100):
     env = AttentionConstrainedEnvironment(env_size=84, attn_size=21, device=device)
     env.env = PhysEnv()
 
-    steps = 20
+    steps = 25
     fig, axarr = plt.subplots(steps, 4, figsize=(2*3, 2*steps))
 
     map.reset()
     # starting glimpse location
     glimpse_logits = glimpse_agent.pi(map.map.detach())
-    glimpse_action = glimpse_agent.policy(glimpse_logits, test=False).detach()
+    glimpse_action = glimpse_agent.policy(glimpse_logits, test=True).detach()
     glimpse_action_clipped = glimpse_agent.norm_and_clip(glimpse_action.cpu().numpy())
     print(glimpse_action_clipped)
-    obs, _, mask = env.reset(loc=glimpse_action_clipped)
+    obs, unmasked_obs, mask = env.reset(loc=glimpse_action_clipped)
     done = False
     overall_error = 0
+    total_post_step_loss = 0
     for i in range(steps):
+        # display reconstruction of what map sees
+        post_step_reconstruction = map.reconstruct().detach().squeeze()
+        overall_error += mse(post_step_reconstruction, unmasked_obs).mean().item()
+        total_post_step_loss += mse_masked(post_step_reconstruction, obs, mask).mean().item()
         # first the display heatmap used for attention
         heatmap = F.softmax(glimpse_logits, dim=-1).view(size, size).detach().cpu().numpy()
-        import pdb; pdb.set_trace()
         axarr[i, 0].imshow(heatmap)
         # display full environment image
         axarr[i, 1].imshow(env.env.render())
@@ -86,6 +92,7 @@ for step in range(200, 300, 100):
         axarr[i, 2].imshow(mask.cpu().numpy().squeeze())
         # write observation to map
         map.write(obs.unsqueeze(dim=0), mask, 1 - mask)
+        axarr[i, 3].imshow(utils.postprocess(map.reconstruct().detach().cpu().numpy()).squeeze())
         # take a step in the environment!
         state = map.map.detach()
         logits = ac.pi(state)
@@ -99,20 +106,18 @@ for step in range(200, 300, 100):
         map.detach()
         # glimpse agent decides where to look after map has stepped
         glimpse_logits = glimpse_agent.pi(map.map.detach())
-        glimpse_action = glimpse_agent.policy(glimpse_logits, test=False).detach()
+        glimpse_action = glimpse_agent.policy(glimpse_logits, test=True).detach()
         print(glimpse_agent.policy.entropy(glimpse_logits))
         print(glimpse_logits)
         glimpse_action_clipped = glimpse_agent.norm_and_clip(glimpse_action.cpu().numpy())
         print(glimpse_action_clipped)
         (next_obs, _, next_mask), r, done, _ = env.step(action.cpu().numpy(), loc=glimpse_action_clipped)
-        # next display reconstruction of what map sees
-        reconstruction = utils.postprocess(map.reconstruct().detach().cpu().numpy()).squeeze()
-        overall_error += (((env.env.render() - reconstruction)/255.)**2).mean()
-        axarr[i, 3].imshow(reconstruction)
         print(r)
         obs = next_obs
         mask = next_mask
         if done:
             break
+    print(i)
     print(overall_error/i)
+    print(total_post_step_loss/i)
     plt.savefig(os.path.join(model_dir, 'rl_visualization_{}.jpeg'.format(step)))
