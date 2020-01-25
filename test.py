@@ -112,7 +112,8 @@ for path in model_paths:
         q_arch=PolicyFunction_21_84,
         channels=MAP_CHANNELS,
         device=device, )
-    glimpse_agent.q = glimpse_q
+    glimpse_agent.dqn.q = glimpse_q
+    glimpse_agent.pi = glimpse_q
     # draw a testing batch
     try:
         test_batch = next(test_loader_iter)
