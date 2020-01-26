@@ -399,14 +399,15 @@ class DMMAgent():
             nb_actions=4,
             batchsize=self.batchsize,
             device=device)
+        # import os
+        # model_dir = '/home/himanshu/experiments/DynamicNeuralMap/PhysEnv/RL_DMM_refactored_offpolicyglimpse2/'
+        # path = os.path.join(model_dir, 'map_{}.pth'.format(25000))
+        # self.map.load(path)
         self.map.to(device)
         self.map.share_memory()
-        self.optimizer = optim.Adam(self.map.parameters(), lr=1e-4)
+        self.lr = 1e-4
+        self.optimizer = optim.Adam(self.map.parameters(), lr=self.lr)
         # create glimpse agent
-        # glimpse_policy_network = PolicyFunction_21_84(channels=state_shape[0])
-        # glimpse_value_network = ValueFunction(channels=state_shape[0], input_size=state_shape[1])
-        # glimpse_policy_network.share_memory()
-        # glimpse_value_network.share_memory()
         self.glimpse_agent = OffPolicyGlimpseAgent(
             output_size=obs_shape[1],
             attn_size=attn_size,
@@ -414,6 +415,19 @@ class DMMAgent():
             q_arch=PolicyFunction_21_84,
             channels=state_shape[0],
             device=device)
+        self.glimpse_agent.pi.share_memory()
+        # self.glimpse_agent.dqn.q.share_memory()
+        # path = os.path.join(model_dir, 'glimpse_{}.pth'.format(25000))
+        # glimpsenet = torch.load(path, map_location='cpu')
+        # glimpse_q = glimpsenet['q'].to(device)
+        # glimpse_q.share_memory()
+        # self.glimpse_agent.dqn.q = glimpse_q
+        # self.glimpse_agent.dqn.copy_target()
+        # self.glimpse_agent.pi = glimpse_q
+        # ac = torch.load(os.path.join(model_dir, 'actor_critic_{}.pth'.format(25000)), map_location=device)
+        # ac.share_memory()
+        # self.algorithm.new_actor_critic = ac
+        # self.algorithm.copy_target()
 
     class Clone:
         def __init__(self, thread_num, map, glimpse_agent, policy, nb_rollout, frame_stack, rollout, buffer, buffer_len, device):
@@ -449,6 +463,7 @@ class DMMAgent():
                 q_arch=PolicyFunction_21_84,
                 channels=map.channels,
                 device=device)
+            self.glimpse_agent.pi = glimpse_agent.pi
 
         def run(self, pi, env, startq, stopq):
             from phys_env import phys_env
@@ -697,6 +712,7 @@ class DMMAgent():
         # make the policy available to all processes
         self.algorithm.actor_critic.share_memory()
         procs = []
+        clones = []
         for t in range(self.nb_threads):
             startq = mp.Queue(1)
             startqs.append(startq)
@@ -714,6 +730,7 @@ class DMMAgent():
                 buffer_len=self.max_buffer_len,
                 device = self.device,
             )
+            clones.append(c)
             proc = mp.Process(target=c.run, args=(self.algorithm.pi, make_env(), startq, stopq))
             procs.append(proc)
             proc.start()
@@ -784,6 +801,7 @@ class DMMAgent():
             metrics['agent/avg_ep_len'].update(rollout['avg_ep_len'].mean().item())
 
             # train DMM!
+            self.dmm_train_delay = 0
             if samples_added > self.dmm_train_delay:
                 mean_seq_len = metrics['agent/avg_ep_len'].avg
                 nb_dmm_updates = int(self.nb_threads * self.nb_rollout_steps // (mean_seq_len * self.batchsize))
@@ -813,6 +831,10 @@ class DMMAgent():
                         self.glimpse_agent.update(self.map.map.detach(), dones, metrics, scope='glimpse')
                     self.glimpse_agent.reset()
             step += 1
+            # if step % 10000 == 0:
+            #     self.lr *= 0.1
+            #     for param_group in self.optimizer.param_groups:
+            #         param_group['lr'] = self.lr
             # test
             if step % self.test_freq == 0:
                 test_startq.put(step // self.test_freq)
