@@ -16,20 +16,12 @@ np.set_printoptions(precision=3)
 BATCH_SIZE = 4
 SEED = 123
 ATTN_SIZE = 5
-# ENV_SIZE = 16
-# MAP_SIZE = 8
 ATTN_SIZE = 21
 ENV_SIZE = 84
 MAP_SIZE = 21
 MAP_CHANNELS = 48
 
-# env_name = 'DynamicObjects-v1'
-# from dynamicobject import DynamicObjects
-# env = DynamicObjects(size=ENV_SIZE)
-# CHANNELS = env.observation_space.shape[2]
 env_name = 'PhysEnv'
-# env_name = 'Breakout-v4'
-# env_name = 'Pong-v4'
 CHANNELS = 3
 class ENV:
     def render(self, img):
@@ -44,8 +36,8 @@ torch.manual_seed(SEED)
 
 # initialize training data
 demo_dir = '/home/himanshu/experiments/DynamicNeuralMap/testingdata-{}-v1/'.format(env_name)
-print('using training data from {}'.format(demo_dir))
-dataset = CurriculumDataset(demo_dir=demo_dir, preload=False)
+print('using testing data from {}'.format(demo_dir))
+dataset = SequenceDataset(data_dir=demo_dir)
 seq_len = 64
 dataset.set_seqlen(seq_len)
 test_idxs = list(range(len(dataset)))
@@ -60,10 +52,7 @@ device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 print("will run on {} device!".format(device))
 
 # initialize map
-# map = DynamicMap(
-map = ConditionalDynamicMap(
-# map = BlendDNM(
-# map = SpatialNet(
+map = DynamicMap(
     size=MAP_SIZE,
     channels=MAP_CHANNELS,
     env_size=ENV_SIZE,
@@ -75,12 +64,13 @@ map.to(device)
 mse = MSEMasked()
 mse_unmasked = nn.MSELoss(reduction='none')
 # saved models
+# name = 'RL_DMM_refactored'
 name = '21map_DMM_actioncondition'
 # name = '21map_DMM_norecurrentbackground_noblend2'
 model_dir = '/home/himanshu/experiments/DynamicNeuralMap/{}/{}/'.format(env_name, name)
 model_paths = [os.path.join(model_dir, name) for name in os.listdir(model_dir)
                if name.endswith('pth') and
-               # '127000' in name and
+               '80000' in name and
                'map' in name]
 
 attn_span = range(-(ATTN_SIZE//2), ATTN_SIZE//2+1)
@@ -102,24 +92,20 @@ for path in model_paths:
     # load the model
     print("loading " + path)
     map.load(path)
+    map.to(device)
     it = int(os.path.splitext(os.path.basename(path))[0].split('_')[-1][3:])
     # load the glimpse agent
-    if it < 329000:
-        continue
     pathdir, pathname = os.path.split(path)
     glimpsenet = torch.load(os.path.join(pathdir, pathname.replace("map", "glimpsenet")), map_location='cpu')
     glimpse_pi = glimpsenet['policy_network'].to(device)
     glimpse_V = glimpsenet['value_network'].to(device)
-    #glimpse_pi = glimpsenet.policy_head
-    #glimpse_V = glimpsenet.value_head
-    #glimpse_agent = GlimpseAgent((MAP_CHANNELS, MAP_SIZE, MAP_SIZE), ENV_SIZE, device)
-    #glimpse_agent.load(glimpse_pi, glimpse_V)
     glimpse_agent = GlimpseAgent(
         output_size=ENV_SIZE,
+        attn_size=ATTN_SIZE,
+        batchsize=BATCH_SIZE,
         policy_network=glimpse_pi,
         value_network=glimpse_V,
         device=device)
-    map.to(device)
     # draw a testing batch
     try:
         test_batch = next(test_loader_iter)
@@ -203,17 +189,17 @@ for path in model_paths:
         'sigma': sigma,
         'overall_reconstruction_loss': overall_reconstruction_loss,
     }, os.path.join(model_dir, 'loss_{}.pt'.format(model_name)))
-    # # save some generated images
-    # save_example_images(
-    #    [state_batch[t][0].cpu() for t in range(seq_len)],
-    #    test_maps_heatmaps,
-    #    test_maps_prestep,
-    #    test_maps_poststep,
-    #    test_locs,
-    #    os.path.join(model_dir, 'predictions_{}.jpeg'.format(model_name)),
-    #    env)
+    # save some generated images
+    save_example_images(
+       [state_batch[t][0].cpu() for t in range(seq_len)],
+       test_maps_heatmaps,
+       test_maps_prestep,
+       test_maps_poststep,
+       test_locs,
+       os.path.join(model_dir, 'predictions_{}.jpeg'.format(model_name)),
+       env)
     to_print = "[{}] test loss: {:.3f}".format(model_name, test_loss)
-    to_print += ", overall image loss: {:.3f}".format(overall_reconstruction_loss.mean(dim=-1).sum(dim=-1).mean())
+    to_print += ", overall image loss: {:.3f}".format(overall_reconstruction_loss.mean())
     to_print += ", time/iter (ms): {:.3f}".format(1000 * (time.time() - start))
     print(to_print)
     start = time.time()

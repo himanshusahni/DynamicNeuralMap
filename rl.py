@@ -24,7 +24,7 @@ class GlimpseAgent():
         self.policy = policies.MultinomialPolicy()
         self.device = device
         self.a2c = algorithms.A2C(policy_network, value_network, self.policy, device, gamma=0.9,
-                                  entropy_weighting=.1)
+                                  entropy_weighting=.01)
         self.pi = self.a2c.pi
 
         attn_span = range(-(self.attn_size// 2), self.attn_size// 2 + 1)
@@ -74,7 +74,7 @@ class GlimpseAgent():
     def update(self, final_state, dones, metrics, scope=''):
         """update glimpse policy using experience from this episode"""
         # designate last state of sequence as terminal for glimpse agent
-        self.dones[-1][:] = dones
+        self.dones[-1][:] = 1.
         states = torch.cat([state.unsqueeze(dim=1) for state in self.states], dim=1)
         actions = torch.cat([action.unsqueeze(dim=1) for action in self.actions], dim=1)
         rewards = torch.cat([reward.unsqueeze(dim=1) for reward in self.rewards], dim=1)
@@ -289,7 +289,8 @@ class DMMAgent():
                     if done:
                         self.map.reset()
                         # starting glimpse location
-                        glimpse_logits = self.glimpse_agent.pi(self.map.map.detach())
+                        glimpse_state = self.map.map.detach()
+                        glimpse_logits = self.glimpse_agent.pi(glimpse_state)
                         glimpse_action = self.glimpse_agent.policy(glimpse_logits).detach()
                         glimpse_action_clipped = self.glimpse_agent.norm_and_clip(glimpse_action.cpu().numpy())
                         obs, unmasked_obs, mask = self.env.reset(loc=glimpse_action_clipped, step=global_step)
@@ -304,6 +305,7 @@ class DMMAgent():
                     self.buffer['unmasked_obs'][self.t, self.buffer_idx] = unmasked_obs
                     self.buffer['masks'][self.t, self.buffer_idx] = mask
                     self.buffer['glimpse_actions'][self.t, self.buffer_idx] = glimpse_action
+                    self.buffer['states'][self.t, self.buffer_idx] = glimpse_state
                     # prepare to take a step in the environment!
                     action = self.policy(pi(state)).detach()
                     # step the map forward according to agent action
@@ -313,7 +315,8 @@ class DMMAgent():
                     # no need to store gradient information for rollouts
                     self.map.detach()
                     # glimpse agent decides where to look after map has stepped
-                    glimpse_logits = self.glimpse_agent.pi(self.map.map.detach())
+                    glimpse_state = self.map.map.detach()
+                    glimpse_logits = self.glimpse_agent.pi(glimpse_state)
                     glimpse_action = self.glimpse_agent.policy(glimpse_logits).detach()
                     glimpse_action_clipped = self.glimpse_agent.norm_and_clip(glimpse_action.cpu().numpy())
                     # step!
@@ -398,6 +401,7 @@ class DMMAgent():
         glimpses = []
         masks = []
         unmasked_glimpses = []
+        glimpse_states = []
         glimpse_actions = []
         actions = []
         rewards = []
@@ -422,6 +426,7 @@ class DMMAgent():
             glimpses.append(buffer['obs'][t, seq_idx].unsqueeze(0))
             masks.append(buffer['masks'][t, seq_idx].unsqueeze(0))
             unmasked_glimpses.append(buffer['unmasked_obs'][t, seq_idx].unsqueeze(0))
+            glimpse_states.append(buffer['states'][t, seq_idx].unsqueeze(0))
             glimpse_actions.append(buffer['glimpse_actions'][t, seq_idx].unsqueeze(0))
             actions.append(buffer['actions'][t, seq_idx].unsqueeze(0))
             rewards.append(buffer['rewards'][t, seq_idx].unsqueeze(0))
@@ -431,11 +436,12 @@ class DMMAgent():
         glimpses = torch.cat(glimpses, dim=0).transpose(0,1)
         masks = torch.cat(masks, dim=0).transpose(0,1)
         unmasked_glimpses = torch.cat(unmasked_glimpses, dim=0).transpose(0,1)
+        glimpse_states = torch.cat(glimpse_states, dim=0).transpose(0,1)
         glimpse_actions = torch.cat(glimpse_actions, dim=0).transpose(0,1)
         actions = torch.cat(actions, dim=0).transpose(0,1)
         rewards = torch.cat(rewards, dim=0).transpose(0,1)
         dones = torch.cat(dones, dim=0)
-        return glimpses, masks, unmasked_glimpses, glimpse_actions, actions, rewards, dones
+        return glimpses, masks, unmasked_glimpses, glimpse_states, glimpse_actions, actions, rewards, dones
 
     # samples_added = samples_added // self.nb_threads  # samples in each row of buffer
     # nb_valid_samples = min(samples_added, self.max_buffer_len)
@@ -496,6 +502,10 @@ class DMMAgent():
                 self.nb_threads,
                 self.max_buffer_len,
                 *self.obs_shape).to(self.device).share_memory_(),
+            'states': torch.empty(
+                self.nb_threads,
+                self.max_buffer_len,
+                *self.state_shape).to(self.device).share_memory_(),
             'masks': torch.empty(
                 self.nb_threads,
                 self.max_buffer_len,
@@ -564,13 +574,6 @@ class DMMAgent():
 
         # train
         step = 0
-        seqlen = 10
-        maxseqlen = 25
-        # gammas = {10: 0.983, 11: 0.965, 12: 0.952, 13: 0.941, 14: 0.933,
-        #           15: 0.927, 16: 0.921, 17: 0.917, 18: 0.913, 19: 0.910,
-        #           20: 0.908, 21: 0.906, 22: 0.904, 23: 0.902, 24: 0.901,
-        #           25: 0.9}
-        # self.glimpse_agent.a2c.gamma = gammas[seqlen]
         samples_added = 0
         metrics = {'agent/policy_loss': AverageMeter(history=10),
                    'agent/val_loss': AverageMeter(history=10),
@@ -611,15 +614,15 @@ class DMMAgent():
 
             # train DMM!
             if samples_added > self.dmm_train_delay:
-                mean_seq_len = metrics['agent/avg_ep_len'].avg
-                nb_dmm_updates = int(self.nb_threads * self.nb_rollout_steps // (mean_seq_len * self.batchsize))
-                # picking a curriculum for sequence length
-                quartiles = np.percentile(np.array(metrics['agent/avg_ep_len'].q), [25, 75])
-                quartiles = [np.floor(quartiles[0]), np.ceil(quartiles[1])]
+                if step < 10000:
+                    nb_dmm_updates = 15
+                elif step < 20000:
+                    nb_dmm_updates = 10
+                else:
+                    nb_dmm_updates = 0
                 for _ in range(nb_dmm_updates):
-                    # max seq length is preset
-                    seqlen = min(maxseqlen, np.random.randint(*quartiles))
-                    glimpses, masks, unmasked_glimpses, glimpse_actions, actions, rewards, dones = \
+                    seqlen = 25
+                    glimpses, masks, unmasked_glimpses, glimpse_states, glimpse_actions, actions, rewards, dones = \
                         self.create_batch(buffer, samples_added, seqlen, metrics)
                     self.optimizer.zero_grad()
                     loss = self.map.lossbatch(
@@ -630,6 +633,7 @@ class DMMAgent():
                         training_metrics=metrics,
                         mask_batch=masks,
                         unmasked_state_batch=unmasked_glimpses,
+                        glimpse_state_batch=glimpse_states,
                         glimpse_action_batch=glimpse_actions)
                     # propagate loss back through entire training sequence
                     loss.backward()
@@ -639,9 +643,6 @@ class DMMAgent():
                         self.glimpse_agent.update(self.map.map.detach(), dones, metrics, scope='glimpse')
                     self.glimpse_agent.reset()
             step += 1
-            if step == 20000:
-                for param_group in self.optimizer.param_groups:
-                    param_group['lr'] = self.lr * 0.01
             # test
             if step % self.test_freq == 0:
                 test_startq.put(step // self.test_freq)

@@ -109,7 +109,7 @@ class DynamicMap():
 
     def lossbatch(self, state_batch, action_batch, reward_batch,
                   glimpse_agent, training_metrics,
-                  mask_batch=None, unmasked_state_batch=None, glimpse_action_batch=None):
+                  mask_batch=None, unmasked_state_batch=None, glimpse_state_batch=None, glimpse_action_batch=None):
         mse = MSEMasked()
         mse_unmasked = nn.MSELoss()
         total_write_loss = 0
@@ -134,7 +134,7 @@ class DynamicMap():
             else:
                 obs_mask = mask_batch[t]
                 minus_obs_mask = 1 - obs_mask
-                glimpse_agent.states.append(self.map.detach())
+                glimpse_agent.states.append(glimpse_state_batch[t])
                 glimpse_agent.actions.append(glimpse_action_batch[t])
             post_step_loss = mse(post_step_reconstruction, state_batch[t], obs_mask)
             glimpse_agent.reward(post_step_loss.detach()/10)

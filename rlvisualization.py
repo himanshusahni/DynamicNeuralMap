@@ -19,7 +19,7 @@ from rl import GlimpseAgent, AttentionConstrainedEnvironment
 # torch.manual_seed(123)
 # np.random.seed(123)
 
-d = '/home/himanshu/experiments/DynamicNeuralMap/PhysEnv/RL_DMM_refactored/'
+d = '/home/himanshu/experiments/DynamicNeuralMap/PhysEnv/RL_DMM_refactored2/'
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 attn_size = 21
 size = 84
@@ -34,7 +34,7 @@ map = DynamicMap(
 
 mse = torch.nn.MSELoss(reduction='none')
 mse_masked = utils.MSEMasked()
-for step in range(20000, 20100, 100):
+for step in range(12600, 12700, 100):
     ac = torch.load(os.path.join(d, 'actor_critic_{}.pth'.format(step)), map_location=device)
 
     model_dir = d
@@ -59,13 +59,13 @@ for step in range(20000, 20100, 100):
     env = AttentionConstrainedEnvironment(env_size=84, attn_size=21, device=device)
     env.env = PhysEnv()
 
-    steps = 25
+    steps = 64
     fig, axarr = plt.subplots(steps, 4, figsize=(2*3, 2*steps))
 
     map.reset()
     # starting glimpse location
     glimpse_logits = glimpse_agent.pi(map.map.detach())
-    glimpse_action = glimpse_agent.policy(glimpse_logits, test=True).detach()
+    glimpse_action = glimpse_agent.policy(glimpse_logits, test=False).detach()
     glimpse_action_clipped = glimpse_agent.norm_and_clip(glimpse_action.cpu().numpy())
     print(glimpse_action_clipped)
     obs, unmasked_obs, mask = env.reset(loc=glimpse_action_clipped)
@@ -108,14 +108,15 @@ for step in range(20000, 20100, 100):
         map.detach()
         # glimpse agent decides where to look after map has stepped
         glimpse_logits = glimpse_agent.pi(map.map.detach())
-        glimpse_action = glimpse_agent.policy(glimpse_logits, test=True).detach()
+        glimpse_action = glimpse_agent.policy(glimpse_logits, test=False).detach()
         print(glimpse_agent.policy.entropy(glimpse_logits))
         print(glimpse_logits)
         glimpse_action_clipped = glimpse_agent.norm_and_clip(glimpse_action.cpu().numpy())
-        (next_obs, _, next_mask), r, done, _ = env.step(action.cpu().numpy(), loc=glimpse_action_clipped)
+        (next_obs, next_unmasked_obs, next_mask), r, done, _ = env.step(action.cpu().numpy(), loc=glimpse_action_clipped)
         print(r)
         obs = next_obs
         mask = next_mask
+        unmasked_obs = next_unmasked_obs
         if done:
             break
     print(i)
