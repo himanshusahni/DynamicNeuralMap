@@ -10,7 +10,8 @@ import torch
 from torch.utils.data import DataLoader
 import torch.optim as optim
 
-from utils import SequenceDataset, time_collate, AverageMeter, MSEMasked
+from pytorch_rl.utils import AverageMeter
+from utils import SequenceDataset, time_collate, MSEMasked
 from rl import GlimpseAgent
 from networks import *
 from dynamicmap import DynamicMap
@@ -28,13 +29,7 @@ if __name__ == "__main__":
     MAP_SIZE = 21
     MAP_CHANNELS = 48
 
-    # env_name = 'DynamicObjects-v1'
-    # from dynamicobject import DynamicObjects
-    # env = DynamicObjects(size=ENV_SIZE)
-    # CHANNELS = env.observation_space.shape[2]
     env_name = 'PhysEnv'
-    # env_name = 'Breakout-v4'
-    # env_name = 'Pong-v4'
     CHANNELS = 3
     np.random.seed(SEED)
     torch.manual_seed(SEED)
@@ -69,6 +64,7 @@ if __name__ == "__main__":
     glimpse_agent = GlimpseAgent(
         output_size=ENV_SIZE,
         attn_size=ATTN_SIZE,
+        batchsize=BATCH_SIZE,
         policy_network=policy_network,
         value_network=value_network,
         device=device,)
@@ -77,11 +73,12 @@ if __name__ == "__main__":
 
     # iterate through data and learn!
     training_metrics = OrderedDict([
-        ('map/write cost', AverageMeter()),
-        ('map/step cost', AverageMeter()),
-        ('map/post write', AverageMeter()),
-        ('map/post step', AverageMeter()),
+        ('map/write_cost', AverageMeter()),
+        ('map/step_cost', AverageMeter()),
+        ('map/post_write', AverageMeter()),
+        ('map/post_step', AverageMeter()),
         ('map/overall', AverageMeter()),
+        ('map/min_overall', AverageMeter()),
         ('glimpse/policy_loss', AverageMeter()),
         ('glimpse/policy_entropy', AverageMeter()),
         ('glimpse/val_loss', AverageMeter()),
@@ -108,10 +105,9 @@ if __name__ == "__main__":
             # propagate loss back through entire training sequence
             loss.backward()
             optimizer.step()
-            # designate last state of sequence as terminal for glimpse agent
-            glimpse_agent.dones[-1][:] = 1
             # and update the glimpse agent
-            glimpse_agent.update(map.map.detach(), training_metrics, scope='glimpse')
+            glimpse_agent.update(map.map.detach(), None, training_metrics, None, scope='glimpse')
+            glimpse_agent.reset()
             i_batch += 1
 
             if i_batch % 100 == 0:
@@ -123,7 +119,7 @@ if __name__ == "__main__":
                 print(to_print)
                 start = time.time()
             if i_batch % 1000 == 0:
-                agentsavepath = os.path.join('/home/himanshu/experiments/DynamicNeuralMap', env_name, '21map_DMM_actioncondition_taskreward')
+                agentsavepath = os.path.join('/home/himanshu/experiments/DynamicNeuralMap', env_name, '21map_DMM_actioncondition2')
                 print('saving network weights to {} ...'.format(agentsavepath))
                 map.save(os.path.join(agentsavepath, 'map{}.pth'.format(i_batch)))
                 # glimpse_net = glimpse_agent.ppo.actor_critic
