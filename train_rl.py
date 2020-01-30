@@ -52,7 +52,7 @@ if __name__ == '__main__':
                         help='environment name',)
     args = parser.parse_args()
 
-    args.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    args.device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 
     args.env = 'PhysEnv'
 
@@ -116,7 +116,7 @@ if __name__ == '__main__':
         clip_value_loss=False,
         value_loss_weighting=0.5,
         entropy_weighting=0.01)
-    savedir = '/home/himanshu/experiments/DynamicNeuralMap/PhysEnv/RL_DMM_refactored2'
+    savedir = '/home/himanshu/experiments/DynamicNeuralMap/PhysEnv/RL_DMM_refactored'
     calls = [callbacks.PrintCallback(freq=10),
              callbacks.SaveMetrics(
                  save_dir=savedir,
@@ -133,7 +133,7 @@ if __name__ == '__main__':
         frame_stack=args.frame_stack,
         obs_shape=obs_shape,
         attn_size=21,
-        batchsize=4,
+        batchsize=8,
         max_buffer_len=12500,
         agent_train_delay=30000,
         device=args.device,
