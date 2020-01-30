@@ -48,7 +48,7 @@ test_loader = DataLoader(dataset, batch_size=BATCH_SIZE,
 test_loader_iter = iter(test_loader)
 
 # gpu?
-device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 print("will run on {} device!".format(device))
 
 # initialize map
@@ -64,13 +64,17 @@ map.to(device)
 mse = MSEMasked()
 mse_unmasked = nn.MSELoss(reduction='none')
 # saved models
-# name = 'RL_DMM_refactored'
-name = '21map_DMM_actioncondition'
+# name = 'RL_DMM_refactored2'
+name = '21map_DMM_actioncondition2'
 # name = '21map_DMM_norecurrentbackground_noblend2'
 model_dir = '/home/himanshu/experiments/DynamicNeuralMap/{}/{}/'.format(env_name, name)
 model_paths = [os.path.join(model_dir, name) for name in os.listdir(model_dir)
                if name.endswith('pth') and
-               '80000' in name and
+               #'150000' in name and
+               #'150000' in name or
+               #'200000' in name or
+               #'250000' in name or
+               #'300000' in name) and
                'map' in name]
 
 attn_span = range(-(ATTN_SIZE//2), ATTN_SIZE//2+1)
@@ -89,11 +93,13 @@ def create_attn_mask(loc):
 
 start = time.time()
 for path in model_paths:
+    it = int(os.path.splitext(os.path.basename(path))[0].split('_')[-1][3:])
+    if it < 36000:
+        continue
     # load the model
     print("loading " + path)
     map.load(path)
     map.to(device)
-    it = int(os.path.splitext(os.path.basename(path))[0].split('_')[-1][3:])
     # load the glimpse agent
     pathdir, pathname = os.path.split(path)
     glimpsenet = torch.load(os.path.join(pathdir, pathname.replace("map", "glimpsenet")), map_location='cpu')
@@ -200,6 +206,7 @@ for path in model_paths:
        env)
     to_print = "[{}] test loss: {:.3f}".format(model_name, test_loss)
     to_print += ", overall image loss: {:.3f}".format(overall_reconstruction_loss.mean())
+    to_print += ", glimpse entropy: {:.3f}".format(sigma.mean())
     to_print += ", time/iter (ms): {:.3f}".format(1000 * (time.time() - start))
     print(to_print)
     start = time.time()
