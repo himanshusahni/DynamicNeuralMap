@@ -624,7 +624,7 @@ class DMMAgent():
             # train DMM!
             if samples_added > self.dmm_train_delay:
                 if step < 10000:
-                    nb_dmm_updates = 10
+                    nb_dmm_updates = 15
                 else:
                     nb_dmm_updates = 0
                 for _ in range(nb_dmm_updates):
