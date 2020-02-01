@@ -143,7 +143,7 @@ class AttentionConstrainedEnvironment:
         glimpse = state * obs_mask
         return glimpse, state, obs_mask
 
-    def reset(self, loc=None, step=None):
+    def reset(self, loc=None):
         """
         starts a new episode
         :param loc: location of first glimpse, if None, chosen randomly
@@ -151,7 +151,7 @@ class AttentionConstrainedEnvironment:
         """
         self.ep_step = 0
         # first reset the underlying environment and get a state
-        state = self.env.reset(step)
+        state = self.env.reset()
         state = self.preprocess(state)
         if loc is None:
             # pick a random location
@@ -293,7 +293,7 @@ class DMMAgent():
                         glimpse_logits = self.glimpse_agent.pi(glimpse_state).detach()
                         glimpse_action = self.glimpse_agent.policy(glimpse_logits).detach()
                         glimpse_action_clipped = self.glimpse_agent.norm_and_clip(glimpse_action.cpu().numpy())
-                        obs, unmasked_obs, mask = self.env.reset(loc=glimpse_action_clipped, step=global_step)
+                        obs, unmasked_obs, mask = self.env.reset(loc=glimpse_action_clipped)
                         # write observation to map
                         self.map.write(obs.unsqueeze(dim=0), mask, 1 - mask)
                         state = self.map.map.detach()
