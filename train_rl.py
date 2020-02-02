@@ -66,38 +66,10 @@ if __name__ == '__main__':
         state_shape = (observation_space[0] * args.frame_stack,
                        *observation_space[1:])
     obs_shape = (3, 84, 84)
-    # nb_actions = env.action_space.n
     nb_actions = 4
 
-    # name = '21map_DMM_envdata'
-    # name = '21map_DMM_norecurrentbackground_noblend'
-    # name = '21map_DMM_actioncondition_taskreward'
-    # model_dir = '/home/himanshu/experiments/DynamicNeuralMap/{}/{}/'.format(args.env, name)
-    # path = os.path.join(model_dir, 'map200000.pth')
-    # map.load(path)
-    # map.to(args.device)
-    # map.write_model.share_memory()
-    # map.step_model.share_memory()
-    # path = os.path.join(model_dir, 'glimpsenet200000.pth')
-    # glimpsenet = torch.load(path, map_location='cpu')
-    # policy_network = glimpsenet['policy_network'].to(args.device)
-    # value_network = glimpsenet['value_network'].to(args.device)
-    # policy_network = PolicyFunction_21_84(channels=48)
-    # value_network = ValueFunction(channels=48, input_size=21)
-    # glimpse_agent = GlimpseAgent(
-    #     output_size=84,
-    #     policy_network=policy_network,
-    #     value_network=value_network,
-    #     device=args.device)
-    # glimpse_pi = policy_network
-    # glimpse_pi.share_memory()
-    # glimpse_V = value_network
-    # glimpse_V.share_memory()
     def make_env():
         return AttentionConstrainedEnvironment(env_size=84, attn_size=21, device=args.device)
-
-    # policy_network = PolicyFunction2(args.observation_space[2], args.observation_space[0], args.action_space)
-    # value_network = ValueFunction2(args.observation_space[2], args.observation_space[0])
 
     policy = policies.MultinomialPolicy()
     ppo = algorithms.PPO(
@@ -130,7 +102,6 @@ if __name__ == '__main__':
         max_env_steps=1.01*args.max_train_steps,
         state_shape=state_shape,
         test_freq=args.test_freq,
-        frame_stack=args.frame_stack,
         obs_shape=obs_shape,
         attn_size=21,
         batchsize=8,
