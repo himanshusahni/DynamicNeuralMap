@@ -12,6 +12,9 @@ if __name__ == '__main__':
     torch.multiprocessing.set_start_method("spawn")
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('--mode',
+                        help='which memory used',
+                        default='dmm')
     parser.add_argument('--max_train_steps',
                         help='maximum environment steps allowed for training',
                         type=int,
@@ -59,13 +62,18 @@ if __name__ == '__main__':
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    # observation_space = (48, 21, 21)
-    observation_space = (3, 84, 84)
-    if len(observation_space) == 1:
-        state_shape = (observation_space[0] * args.frame_stack,)
+    # state of agent
+    if args.mode == 'dmm':
+        state_shape = (48, 21, 21)
+        trunk = ConvTrunk21
+    elif args.mode == 'stack':
+        state_shape = (3, 84, 84)
+        trunk = ConvTrunk84
+    if len(state_shape) == 1:
+        state_shape = (state_shape[0] * args.frame_stack,)
     else:
-        state_shape = (observation_space[0] * args.frame_stack,
-                       *observation_space[1:])
+        state_shape = (state_shape[0] * args.frame_stack,
+                       *state_shape[1:])
     obs_shape = (3, 84, 84)
     nb_actions = 4
 
@@ -75,8 +83,7 @@ if __name__ == '__main__':
     policy = policies.MultinomialPolicy()
     ppo = algorithms.PPO(
         actor_critic_arch=networks.ActorCritic,
-        # trunk_arch=ConvTrunk3,
-        trunk_arch=ConvTrunk84,
+        trunk_arch=trunk,
         state_shape=state_shape,
         action_space=nb_actions,
         policy=policy,
@@ -99,6 +106,7 @@ if __name__ == '__main__':
     agent = DMMAgent(
         algorithm=ppo,
         policy=policy,
+        memory_mode=args.mode,
         nb_threads=args.nb_threads,
         nb_rollout_steps=args.nb_rollout_steps,
         max_env_steps=1.01*args.max_train_steps,
@@ -115,7 +123,7 @@ if __name__ == '__main__':
     agent.callbacks.append(callbacks.SaveNetworks(
         save_dir=savedir,
         freq=100,
-        networks=agent.tosave()))
+        networks=agent.tosave))
     # finally train
     agent.train(make_env)
 

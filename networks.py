@@ -255,34 +255,6 @@ class MapStepSpatial(nn.Module):
         return x
 
 
-class MapStepRot(nn.Module):
-    """Forward dynamics model for neural attention maps"""
-
-    def __init__(self, channels):
-        super(MapStepRot, self).__init__()
-        # convolve
-        self.conv_weights = torch.nn.Parameter(data=torch.Tensor(channels, channels, 9), requires_grad=True)
-        conv_init = np.random.rand(channels, 1, 9)
-        self.conv_weights.data = torch.from_numpy(conv_init.astype(np.float32))
-        self.channels = channels
-        # rotate
-        self.rot_weights = torch.nn.Parameter(data=torch.Tensor(channels, channels, 1, 1), requires_grad=True)
-        orthonormal_init = np.linalg.qr(np.random.rand(channels, channels))[0]
-        self.rot_weights.data = torch.from_numpy(orthonormal_init.astype(np.float32)).view(channels, channels, 1, 1)
-        self.print_info()
-
-    def print_info(self):
-        print("Initializing step network!")
-        print(self)
-        print("Total conv params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
-
-    def forward(self, x):
-        weights = F.softmax(self.conv_weights, dim=-1).view(self.channels, 1, 3, 3)
-        x = F.conv2d(x, weights, padding=1, groups=self.channels)
-        # rot now
-        return F.conv2d(x, self.rot_weights)
-
-
 class ValueFunction(nn.Module):
     """value prediction layer on top of trunk above"""
     def __init__(self, channels, input_size):
@@ -359,33 +331,6 @@ class ConvTrunk21(nn.Module):
         print("Total params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
 
 
-class PolicyFunction(nn.Module):
-    def __init__(self, observation_space, action_space):
-        super().__init__()
-        channels = observation_space.shape[2]
-        input_size = observation_space.shape[0]
-        nb_actions = action_space.n
-        self.conv1 = nn.Conv2d(channels, 16, 3, stride=2, padding=1)
-        input_size = (input_size + 1) // 2
-        self.conv2 = nn.Conv2d(16, 8, 3, stride=2, padding=1)
-        input_size = (input_size + 1) // 2
-        self.conv3 = nn.Conv2d(8, 4, 3, stride=2, padding=1)
-        input_size = (input_size + 1) // 2
-        self.fc1 = nn.Linear(input_size * input_size * 4, nb_actions)
-        self.print_info()
-
-    def forward(self, x):
-        x = F.leaky_relu(self.conv1(x), 0.2)
-        x = F.leaky_relu(self.conv2(x), 0.2)
-        x = F.leaky_relu(self.conv3(x), 0.2)
-        x = x.flatten(start_dim=1)
-        return self.fc1(x)
-
-    def print_info(self):
-        print(self)
-        print("Total params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
-
-
 class PolicyFunction_x_x(nn.Module):
     """policy prediction layer on top of trunk above"""
     def __init__(self, channels):
@@ -428,70 +373,3 @@ class PolicyFunction_21_84(nn.Module):
         print("Initializing policy function of glimpse agent!")
         print(self)
         print("Total params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
-
-
-class ActorCritic_21_84(nn.Module):
-    """actor critic container for separate 21_84 policy network and
-    value network"""
-    def __init__(self, trunk_arch, observation_space, action_space):
-        super().__init__()
-        self.policy_head = PolicyFunction_21_84(observation_space[0])
-        self.value_head = ValueFunction(channels=observation_space[0], input_size=observation_space[1])
-
-    def print_info(self):
-        self.policy_head.print_info()
-        self.value_head.print_info()
-
-    def parameters(self, recurse=True):
-        return list(self.policy_head.parameters()) + \
-               list(self.value_head.parameters())
-
-    def V_parameters(self, recurse=True):
-        return list(self.value_head.parameters())
-
-    def pi_parameters(self, recurse=True):
-        return list(self.policy_head.parameters())
-
-    def forward(self, x):
-        return self.policy_head(x), self.value_head(x)
-
-    def V(self, x):
-        """only return values"""
-        return self.value_head(x)
-
-    def pi(self, x):
-        """only return policy logits"""
-        return self.policy_head(x)
-
-    def to(self, device):
-        self.policy_head.to(device)
-        self.value_head.to(device)
-
-
-class FCPolicyFunction(nn.Module):
-    """policy prediction layer on top of trunk above"""
-    def __init__(self, input_size, nb_actions):
-        super(FCPolicyFunction, self).__init__()
-        self.fc1 = nn.Linear(input_size, 32)
-        self.fc2 = nn.Linear(32, 32)
-        self.fc3 = nn.Linear(32, nb_actions)
-        self.fc4 = nn.Linear(32, 1)
-
-    def forward(self, x):
-        x = F.leaky_relu(self.fc1(x), 0.2)
-        x = F.leaky_relu(self.fc2(x), 0.2)
-        # return self.fc3(x), self.fc4(x)
-        return self.fc3(x)
-
-class FCValueFunction(nn.Module):
-    """value prediction layer on top of trunk above"""
-    def __init__(self, input_size):
-        super(FCValueFunction, self).__init__()
-        self.fc1 = nn.Linear(input_size, 32)
-        self.fc2 = nn.Linear(32, 32)
-        self.fc3 = nn.Linear(32, 1)
-
-    def forward(self, x):
-        x = F.leaky_relu(self.fc1(x), 0.2)
-        x = F.leaky_relu(self.fc2(x), 0.2)
-        return self.fc3(x)

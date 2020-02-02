@@ -280,10 +280,11 @@ class DynamicMap(MemoryArch):
         return allparams
 
     def tosave(self):
-        return {'write': self.write_model,
-                'blend': self.blend_model,
-                'step': self.step_model,
-                'reconstruct': self.reconstruction_model}
+        return {'write': self.write_model.state_dict(),
+                'blend': self.blend_model.state_dict(),
+                'step': self.step_model.state_dict(),
+                'reconstruct': self.reconstruction_model.state_dict(),
+                'agent step': self.agent_step_model.state_dict()}
 
     def save(self, path):
         tosave = {
@@ -411,7 +412,7 @@ class StackMemory(MemoryArch):
 
     def tosave(self):
         """return all trainable modules that should be saved"""
-        return self.reconstruction_model
+        return self.reconstruction_model.state_dict()
 
     def load(self, path):
         """load all trainable modules from a path"""

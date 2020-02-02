@@ -181,7 +181,7 @@ class AttentionConstrainedEnvironment:
 
 
 class DMMAgent():
-    def __init__(self, algorithm, policy, nb_threads, nb_rollout_steps,
+    def __init__(self, algorithm, policy, memory_mode, nb_threads, nb_rollout_steps,
                  max_env_steps, state_shape, test_freq, obs_shape, frame_stack,
                  attn_size, batchsize, max_buffer_len, agent_train_delay,
                  device, callbacks):
@@ -198,6 +198,7 @@ class DMMAgent():
         """
         self.algorithm = algorithm
         self.policy = policy
+        self.memory_mode = memory_mode
         self.nb_threads = nb_threads
         self.nb_rollout_steps = nb_rollout_steps
         self.max_env_steps = max_env_steps
@@ -214,23 +215,27 @@ class DMMAgent():
         self.max_train_steps = int(max_env_steps // (nb_threads * nb_rollout_steps))
         self.dmm_train_delay = self.max_buffer_len * self.nb_threads // 2
 
-        # create DMM
-        # self.map = DynamicMap(
-        #     size=state_shape[1],
-        #     channels=state_shape[0],
-        #     env_size=obs_shape[1],
-        #     env_channels=obs_shape[0],
-        #     nb_actions=4,
-        #     batchsize=self.batchsize,
-        #     device=device)
-        self.map = StackMemory(frame_stack, obs_shape[1], obs_shape[0], batchsize, device)
+        if memory_mode == 'dmm':
+            # create DMM
+            self.map = DynamicMap(
+                size=state_shape[1],
+                channels=state_shape[0],
+                env_size=obs_shape[1],
+                env_channels=obs_shape[0],
+                nb_actions=4,
+                batchsize=self.batchsize,
+                device=device)
+        elif memory_mode == 'stack':
+            self.map = StackMemory(frame_stack, obs_shape[1], obs_shape[0], batchsize, device)
         self.map.share_memory()
         self.map.to(device)
         self.lr = 1e-4
         self.optimizer = optim.Adam(self.map.parameters(), lr=self.lr)
         # create glimpse agent
-        # glimpse_policy_network = PolicyFunction_21_84(channels=state_shape[0])
-        glimpse_policy_network = PolicyFunction_x_x(channels=state_shape[0])
+        if memory_mode == 'dmm':
+            glimpse_policy_network = PolicyFunction_21_84(channels=state_shape[0])
+        elif memory_mode == 'stack':
+            glimpse_policy_network = PolicyFunction_x_x(channels=state_shape[0])
         glimpse_value_network = ValueFunction(channels=state_shape[0], input_size=state_shape[1])
         glimpse_policy_network.share_memory()
         glimpse_value_network.share_memory()
@@ -243,7 +248,7 @@ class DMMAgent():
             device=device)
 
     class Clone:
-        def __init__(self, thread_num, map, glimpse_agent, policy, nb_rollout, rollout, buffer, buffer_len, device):
+        def __init__(self, thread_num, memory_mode, map, glimpse_agent, policy, nb_rollout, rollout, buffer, buffer_len, device):
             """create a new environment"""
             self.t = thread_num
             self.policy = policy
@@ -254,15 +259,17 @@ class DMMAgent():
             self.device = device
 
             # create its own map with copies of the master maps models but batchsize of 1
-            # self.map = DynamicMap(
-            #     size=map.size,
-            #     channels=map.channels,
-            #     env_size=map.env_size,
-            #     env_channels=map.env_channels,
-            #     nb_actions=4,
-            #     batchsize=1,
-            #     device=device)
-            self.map = StackMemory(map.k, map.size, map.channels, 1, device)
+            if memory_mode == 'dmm':
+                self.map = DynamicMap(
+                    size=map.size,
+                    channels=map.channels,
+                    env_size=map.env_size,
+                    env_channels=map.env_channels,
+                    nb_actions=4,
+                    batchsize=1,
+                    device=device)
+            elif memory_mode == 'stack':
+                self.map = StackMemory(map.k, map.size, map.channels, 1, device)
             self.map.assign(map)
             # similarly, create this thread's own glimpse agent
             self.glimpse_agent = GlimpseAgent(
@@ -299,7 +306,7 @@ class DMMAgent():
                             avg_ep_len.update(ep_len)
                         ep_len = 0
                     # add attention related observations to buffer
-                    # self.buffer['states'][self.t, self.buffer_idx] = glimpse_state.cpu()
+                    self.buffer['states'][self.t, self.buffer_idx] = glimpse_state.cpu()
                     self.buffer['logits'][self.t, self.buffer_idx] = glimpse_logits.cpu()
                     self.buffer['obs'][self.t, self.buffer_idx] = obs.cpu()
                     self.buffer['unmasked_obs'][self.t, self.buffer_idx] = unmasked_obs.cpu()
@@ -426,7 +433,7 @@ class DMMAgent():
             glimpses.append(buffer['obs'][t, seq_idx].unsqueeze(0))
             masks.append(buffer['masks'][t, seq_idx].unsqueeze(0))
             unmasked_glimpses.append(buffer['unmasked_obs'][t, seq_idx].unsqueeze(0))
-            # glimpse_states.append(buffer['states'][t, seq_idx].unsqueeze(0))
+            glimpse_states.append(buffer['states'][t, seq_idx].unsqueeze(0))
             glimpse_logits.append(buffer['logits'][t, seq_idx].unsqueeze(0))
             glimpse_actions.append(buffer['glimpse_actions'][t, seq_idx].unsqueeze(0))
             actions.append(buffer['actions'][t, seq_idx].unsqueeze(0))
@@ -437,7 +444,7 @@ class DMMAgent():
         glimpses = torch.cat(glimpses, dim=0).transpose(0,1).to(self.device)
         masks = torch.cat(masks, dim=0).transpose(0,1).to(self.device)
         unmasked_glimpses = torch.cat(unmasked_glimpses, dim=0).transpose(0,1).to(self.device)
-        # glimpse_states = torch.cat(glimpse_states, dim=0).transpose(0,1).to(self.device)
+        glimpse_states = torch.cat(glimpse_states, dim=0).transpose(0,1).to(self.device)
         glimpse_logits = torch.cat(glimpse_logits, dim=0).to(self.device)
         glimpse_actions = torch.cat(glimpse_actions, dim=0).transpose(0,1).to(self.device)
         actions = torch.cat(actions, dim=0).transpose(0,1).to(self.device)
@@ -480,10 +487,10 @@ class DMMAgent():
                 self.nb_threads,
                 self.max_buffer_len,
                 *self.obs_shape).share_memory_(),
-            # 'states': torch.empty(
-            #     self.nb_threads,
-            #     self.max_buffer_len,
-            #     *self.state_shape).share_memory_(),
+            'states': torch.empty(
+                self.nb_threads,
+                self.max_buffer_len,
+                *self.state_shape).share_memory_(),
             'logits': torch.empty(
                 self.nb_threads,
                 self.max_buffer_len,
@@ -522,6 +529,7 @@ class DMMAgent():
             c = self.Clone(
                 thread_num=t,
                 policy=self.policy,
+                memory_mode=self.memory_mode,
                 map=self.map,
                 glimpse_agent=self.glimpse_agent,
                 nb_rollout=self.nb_rollout_steps,
@@ -539,6 +547,7 @@ class DMMAgent():
         test_clone = self.Clone(
             thread_num=t+1,
             policy=self.policy,
+            memory_mode=self.memory_mode,
             map=self.map,
             glimpse_agent=self.glimpse_agent,
             nb_rollout=self.nb_rollout_steps,
@@ -567,15 +576,20 @@ class DMMAgent():
                    'glimpse/avg_val': AverageMeter(history=100),
                    'glimpse/avg_reward': AverageMeter(history=100),
                    'glimpse/IS_ratio': AverageMeter(history=100),
-                   # 'map/write_cost': AverageMeter(history=100),
-                   # 'map/step_cost': AverageMeter(history=100),
-                   # 'map/post_write': AverageMeter(history=100),
-                   # 'map/post_step': AverageMeter(history=100),
-                   'map/masked_loss': AverageMeter(history=100),
                    'map/overall': AverageMeter(history=100),
                    'map/min_overall': AverageMeter(history=100),
                    'map/done_skips': AverageMeter(history=100),
                    }
+        if self.memory_mode == 'dmm':
+            metrics.update({
+                'map/write_cost': AverageMeter(history=100),
+                'map/step_cost': AverageMeter(history=100),
+                'map/post_write': AverageMeter(history=100),
+                'map/post_step': AverageMeter(history=100),
+            })
+        elif self.memory_mode == 'stack':
+            metrics['map/masked_loss'] = AverageMeter(history=100)
+
         while step < self.max_train_steps:
             # start collecting data
             for start in startqs:
@@ -651,7 +665,11 @@ class DMMAgent():
         dynamic map, and ppo algorithm
         """
         return {
-            'glimpse': {'policy_network': self.glimpse_agent.policy_network,
-                        'value_network': self.glimpse_agent.value_network},
+            'glimpse': {'policy_network': self.glimpse_agent.policy_network.state_dict(),
+                        'value_network': self.glimpse_agent.value_network.state_dict(),
+                        'v_optimizer': self.glimpse_agent.a2c.V_optimizer().state_dict(),
+                        'pi_optimizer': self.glimpse_agent.a2c.pi_optimizer().state_dict()},
+            'actor_critic': {'actor_critic': self.algorithm.actor_critic.state_dict(),
+                             'optimizer': self.algorithm.optimizer.state_dict()},
             'map': self.map.tosave(),
-            'actor_critic': self.algorithm.actor_critic}
+            'optimizer': self.optimizer.state_dict()}
