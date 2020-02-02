@@ -667,8 +667,8 @@ class DMMAgent():
         return {
             'glimpse': {'policy_network': self.glimpse_agent.policy_network.state_dict(),
                         'value_network': self.glimpse_agent.value_network.state_dict(),
-                        'v_optimizer': self.glimpse_agent.a2c.V_optimizer().state_dict(),
-                        'pi_optimizer': self.glimpse_agent.a2c.pi_optimizer().state_dict()},
+                        'v_optimizer': self.glimpse_agent.a2c.V_optimizer.state_dict(),
+                        'pi_optimizer': self.glimpse_agent.a2c.pi_optimizer.state_dict()},
             'actor_critic': {'actor_critic': self.algorithm.actor_critic.state_dict(),
                              'optimizer': self.algorithm.optimizer.state_dict()},
             'map': self.map.tosave(),

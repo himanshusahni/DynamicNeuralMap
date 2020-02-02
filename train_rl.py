@@ -123,7 +123,7 @@ if __name__ == '__main__':
     agent.callbacks.append(callbacks.SaveNetworks(
         save_dir=savedir,
         freq=100,
-        networks=agent.tosave))
+        network_func=agent.tosave))
     # finally train
     agent.train(make_env)
 
