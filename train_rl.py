@@ -23,7 +23,7 @@ if __name__ == '__main__':
     parser.add_argument('--frame_stack',
                         help='how many observations form a state',
                         type=int,
-                        default=1)
+                        default=4)
     parser.add_argument('--seed',
                         help='random seed',
                         type=int,
@@ -52,14 +52,15 @@ if __name__ == '__main__':
                         help='environment name',)
     args = parser.parse_args()
 
-    args.device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+    args.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     args.env = 'PhysEnv'
 
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    observation_space = (48, 21, 21)
+    # observation_space = (48, 21, 21)
+    observation_space = (3, 84, 84)
     if len(observation_space) == 1:
         state_shape = (observation_space[0] * args.frame_stack,)
     else:
@@ -74,7 +75,8 @@ if __name__ == '__main__':
     policy = policies.MultinomialPolicy()
     ppo = algorithms.PPO(
         actor_critic_arch=networks.ActorCritic,
-        trunk_arch=ConvTrunk3,
+        # trunk_arch=ConvTrunk3,
+        trunk_arch=ConvTrunk84,
         state_shape=state_shape,
         action_space=nb_actions,
         policy=policy,
@@ -88,7 +90,7 @@ if __name__ == '__main__':
         clip_value_loss=False,
         value_loss_weighting=0.5,
         entropy_weighting=0.01)
-    savedir = '/home/himanshu/experiments/DynamicNeuralMap/PhysEnv/RL_DMM_refactored'
+    savedir = '/home/himanshu/experiments/DynamicNeuralMap/PhysEnv/RL_framestack'
     calls = [callbacks.PrintCallback(freq=10),
              callbacks.SaveMetrics(
                  save_dir=savedir,
@@ -103,6 +105,7 @@ if __name__ == '__main__':
         state_shape=state_shape,
         test_freq=args.test_freq,
         obs_shape=obs_shape,
+        frame_stack=args.frame_stack,
         attn_size=21,
         batchsize=8,
         max_buffer_len=12500,

@@ -3,6 +3,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 
 import numpy as np
+from collections import deque
 
 from pytorch_rl import policies
 from pytorch_rl.utils import ImgToTensor
@@ -11,7 +12,76 @@ from networks import *
 from utils import MSEMasked
 
 
-class DynamicMap():
+class MemoryArch:
+    """
+    Base class for all baseline memory architectures. The only methods that are required
+    to be implemented to inherit are write, reconstruct and state. Everything else by default
+    assumes that you have no trainable parameters in you memory.
+    """
+    def reset(self):
+        """Architecture has to be reset at end of episode."""
+        pass
+
+    def detach(self):
+        """stopping gradient flow for learnt methods."""
+        pass
+
+    def write(self, glimpse, obs_mask, minus_obs_mask):
+        """
+        write a new observation to memory architecture
+        :param glimpse: a (batchsize, *obs_shape) input to be stored in memory
+        :param obs_mask: mask of where the observation is taken from the state
+        :param minus_obs_mask: negative of above
+        """
+        raise NotImplementedError
+
+    def reconstruct(self):
+        """attempt to reconstruct environment"""
+        raise NotImplementedError
+
+    def content(self):
+        """return current state of memory"""
+        raise NotImplementedError
+
+    def step(self, action=None):
+        """if the memory has a learned model for stepping unobserved environment."""
+        pass
+
+    def assign(self, other):
+        """assign internal trainable modules from another object"""
+        pass
+
+    def lossbatch(self, **kwargs):
+        """
+        train the memory architecture on a batch of observations. (if applicable)
+        :param kwargs: arguments for training.
+        """
+        pass
+
+    def to(self, device):
+        """
+        move trainable modules to device
+        :param device: cpu or gpus
+        """
+        pass
+
+    def share_memory(self):
+        """share trainable modules across threads"""
+        pass
+
+    def parameters(self):
+        """all trainable parameters returns here"""
+        return None
+
+    def tosave(self):
+        """return all trainable modules that should be saved"""
+        return None
+
+    def load(self, path):
+        """load all trainable modules from a path"""
+        pass
+
+class DynamicMap(MemoryArch):
     def __init__(self, size, channels, env_size, env_channels, batchsize, device, nb_actions=None):
         self.size = size
         self.channels = channels
@@ -19,10 +89,7 @@ class DynamicMap():
         self.env_channels = env_channels
         self.batchsize = batchsize
         self.device = device
-        if env_size == 10 and size == 10:
-            self.write_model = MapWrite_x_x(in_channels=env_channels, out_channels=channels)
-            self.reconstruction_model = MapReconstruction_x_x(in_channels=channels, out_channels=env_channels)
-        elif env_size == 84 and size == 21:
+        if env_size == 84 and size == 21:
             self.write_model = MapWrite_84_21(in_channels=env_channels, out_channels=channels)
             self.reconstruction_model = MapReconstruction_21_84(in_channels=channels, out_channels=env_channels)
         # elif env_size == 84 and size == 84:
@@ -107,6 +174,9 @@ class DynamicMap():
         """
         return self.reconstruction_model(self.map)
 
+    def content(self):
+        return self.map
+
     def lossbatch(self, state_batch, action_batch, reward_batch,
                   glimpse_agent, training_metrics,
                   mask_batch=None, unmasked_state_batch=None, glimpse_state_batch=None, glimpse_action_batch=None):
@@ -177,6 +247,13 @@ class DynamicMap():
         training_metrics['map/min_overall'].update(min_overall_reconstruction_loss)
         return loss
 
+    def assign(self, other):
+        self.write_model = other.write_model
+        self.step_model = other.step_model
+        self.reconstruction_model = other.reconstruction_model
+        self.blend_model = other.blend_model
+        self.agent_step_model = other.agent_step_model
+
     def to(self, device):
         self.write_model.to(device)
         self.reconstruction_model.to(device)
@@ -202,6 +279,12 @@ class DynamicMap():
             allparams += list(self.agent_step_model.parameters())
         return allparams
 
+    def tosave(self):
+        return {'write': self.write_model,
+                'blend': self.blend_model,
+                'step': self.step_model,
+                'reconstruct': self.reconstruction_model}
+
     def save(self, path):
         tosave = {
             'write': self.write_model,
@@ -222,6 +305,119 @@ class DynamicMap():
             self.agent_step_model = models['agent step']
 
 
+class StackMemory(MemoryArch):
+    """This memory just stacks past k frames"""
+
+    def __init__(self, frame_stack, env_size, env_channels, batchsize, device):
+        self.k = frame_stack
+        self.size = env_size
+        self.channels = env_channels
+        self.batchsize = batchsize
+        self.obs_shape = (batchsize, env_channels, env_size, env_size)
+        self.device = device
+        # the only trainable module
+        self.reconstruction_model = MapReconstruction_84_84(
+            in_channels=self.k * self.channels,
+            out_channels=self.channels)
+
+    def reset(self):
+        """Architecture has to be reset at end of episode."""
+        self.stateq = deque(
+        [torch.zeros(self.obs_shape).to(self.device)
+         for _ in range(self.k)], maxlen=self.k)
+        self.state = torch.cat(list(self.stateq), dim=1)
+
+    def write(self, glimpse, obs_mask, minus_obs_mask):
+        """In this case, the observation is simply appended to the state stack"""
+        self.stateq.append(glimpse)
+        self.state = torch.cat(list(self.stateq), dim=1)
+
+    def content(self):
+        """current state of the memory"""
+        return self.state
+
+    def reconstruct(self):
+        """attempt to reconstruct environment"""
+        return self.reconstruction_model(self.content())
+
+    def lossbatch(self, state_batch, action_batch, reward_batch,
+                  glimpse_agent, training_metrics,
+                  mask_batch=None, unmasked_state_batch=None, glimpse_state_batch=None, glimpse_action_batch=None):
+        """
+        train the memory architecture on a batch of observations. (if applicable)
+        :param kwargs: arguments for training.
+        """
+        mse = MSEMasked()
+        mse_unmasked = nn.MSELoss()
+        total_masked_loss = 0
+        overall_reconstruction_loss = 0
+        min_overall_reconstruction_loss = 1.
+        # initialize
+        self.reset()
+        loss = 0
+        seq_len = state_batch.size(0)
+        for t in range(seq_len):
+            # pick locations of attention
+            if mask_batch is None:
+                # glimpse agent is online
+                loc = glimpse_agent.step(self.content().detach(), random=False)
+                obs_mask, minus_obs_mask = glimpse_agent.create_attn_mask(loc)
+            else:
+                obs_mask = mask_batch[t]
+                minus_obs_mask = 1 - obs_mask
+                glimpse_agent.states.append(self.content().detach())
+                glimpse_agent.actions.append(glimpse_action_batch[t])
+            reconstruction = self.reconstruct()
+            masked_loss = mse(reconstruction, state_batch[t], obs_mask)
+            glimpse_agent.reward(masked_loss.detach())
+            masked_loss = masked_loss.mean()
+            if unmasked_state_batch is None:
+                recontruction_loss = mse_unmasked(reconstruction, state_batch[t]).mean()
+            else:
+                recontruction_loss = mse_unmasked(reconstruction, unmasked_state_batch[t]).mean()
+            loss += masked_loss
+            total_masked_loss += masked_loss.item()
+            overall_reconstruction_loss += recontruction_loss.item()
+            if t == 0:
+                min_overall_reconstruction_loss = recontruction_loss.item()
+            elif recontruction_loss.item() < min_overall_reconstruction_loss:
+                min_overall_reconstruction_loss = recontruction_loss.item()
+            # write new observation to map
+            obs = state_batch[t] * obs_mask
+            self.write(obs, obs_mask, minus_obs_mask)
+        # update the training metrics
+        training_metrics['map/masked_loss'].update(overall_reconstruction_loss / seq_len)
+        training_metrics['map/overall'].update(overall_reconstruction_loss / seq_len)
+        training_metrics['map/min_overall'].update(min_overall_reconstruction_loss)
+        return loss
+
+    def assign(self, other):
+        self.reconstruction_model = other.reconstruction_model
+
+    def to(self, device):
+        """
+        move trainable modules to device
+        :param device: cpu or gpus
+        """
+        self.reconstruction_model.to(device)
+
+    def share_memory(self):
+        """share trainable modules across threads"""
+        self.reconstruction_model.share_memory()
+
+    def parameters(self):
+        """all trainable parameters returns here"""
+        return self.reconstruction_model.parameters()
+
+    def tosave(self):
+        """return all trainable modules that should be saved"""
+        return self.reconstruction_model
+
+    def load(self, path):
+        """load all trainable modules from a path"""
+        self.reconstruction_model = torch.load(path, map_location='cpu')
+
+
 class SpatialNet():
     """reimplementation of Spatial Net"""
     def __init__(self, size, channels, env_size, env_channels, batchsize, device):
@@ -230,10 +426,7 @@ class SpatialNet():
         self.env_size = env_size
         self.batchsize = batchsize
         self.device = device
-        if env_size == 10 and size == 10:
-            self.write_model = MapWrite_x_x(in_channels=env_channels, out_channels=channels)
-            self.reconstruction_model = MapReconstruction_x_x(in_channels=channels, out_channels=env_channels)
-        elif env_size == 84 and size == 21:
+        if env_size == 84 and size == 21:
             self.write_model = MapWrite_84_21(in_channels=env_channels, out_channels=channels)
             self.reconstruction_model = MapReconstruction_21_84(in_channels=channels, out_channels=env_channels)
         # elif env_size == 84 and size == 84:
