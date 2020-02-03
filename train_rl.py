@@ -90,8 +90,24 @@ if __name__ == '__main__':
                  save_dir=savedir,
                  freq=1000,),
              ]
+    ppo = algorithms.PPO(
+        actor_critic_arch=networks.ActorCritic,
+        trunk_arch=trunk,
+        state_shape=state_shape,
+        action_space=4,
+        policy=policy,
+        ppo_epochs=4,
+        clip_param=0.1,
+        target_kl=0.01,
+        minibatch_size=256,
+        device=args.device,
+        gamma=0.99,
+        lam=0.95,
+        clip_value_loss=False,
+        value_loss_weighting=0.5,
+        entropy_weighting=0.01)
     agent = DMMAgent(
-        trunk=trunk,
+        algorithm=ppo,
         policy=policy,
         memory_mode=args.mode,
         nb_threads=args.nb_threads,

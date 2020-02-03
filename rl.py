@@ -181,7 +181,7 @@ class AttentionConstrainedEnvironment:
 
 
 class DMMAgent():
-    def __init__(self, trunk, policy, memory_mode, nb_threads, nb_rollout_steps,
+    def __init__(self, algorithm, policy, memory_mode, nb_threads, nb_rollout_steps,
                  max_env_steps, state_shape, test_freq, obs_shape, frame_stack,
                  attn_size, batchsize, max_buffer_len, agent_train_delay,
                  device, callbacks):
@@ -196,7 +196,7 @@ class DMMAgent():
         :param max_buffer_len: length of buffer storing samples for DMM updates
         :param agent_train_delay: minimum number of samples DMM has been trained on before starting agent training
         """
-        self.trunk = trunk
+        self.algorithm = algorithm
         self.policy = policy
         self.memory_mode = memory_mode
         self.nb_threads = nb_threads
@@ -214,22 +214,6 @@ class DMMAgent():
 
         self.max_train_steps = int(max_env_steps // (nb_threads * nb_rollout_steps))
         self.dmm_train_delay = self.max_buffer_len * self.nb_threads // 2
-        self.algorithm = algorithms.PPO(
-            actor_critic_arch=networks.ActorCritic,
-            trunk_arch=trunk,
-            state_shape=state_shape,
-            action_space=4,
-            policy=policy,
-            ppo_epochs=4,
-            clip_param=0.1,
-            target_kl=0.01,
-            minibatch_size=256,
-            device=device,
-            gamma=0.99,
-            lam=0.95,
-            clip_value_loss=False,
-            value_loss_weighting=0.5,
-            entropy_weighting=0.01)
 
         if memory_mode == 'dmm':
             # create DMM
@@ -630,7 +614,7 @@ class DMMAgent():
                 'map/post_step': AverageMeter(history=100),
             })
 
-        nb_dmm_updates = 15
+        nb_dmm_updates = 30
         while step < self.max_train_steps:
             # start collecting data
             for start in startqs:
@@ -657,24 +641,6 @@ class DMMAgent():
                         p.terminate()
                     test_proc.terminate()
                     del buffer
-                    # start anew
-                    self.algorithm = algorithms.PPO(
-                        actor_critic_arch=networks.ActorCritic,
-                        trunk_arch=self.trunk,
-                        state_shape=self.state_shape,
-                        action_space=4,
-                        policy=self.policy,
-                        ppo_epochs=4,
-                        clip_param=0.1,
-                        target_kl=0.01,
-                        minibatch_size=256,
-                        device=self.device,
-                        gamma=0.99,
-                        lam=0.95,
-                        clip_value_loss=False,
-                        value_loss_weighting=0.5,
-                        entropy_weighting=0.01)
-                    self.algorithm.actor_critic.share_memory()
                     startqs, stopqs, test_startq, test_stopq, procs, test_proc = self.create_clones(rollout, {},
                                                                                                 make_env)
                 for _ in range(nb_dmm_updates):
