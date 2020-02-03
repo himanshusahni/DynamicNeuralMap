@@ -593,7 +593,7 @@ class DMMAgent():
 
         # make the policy available to all processes
         self.algorithm.actor_critic.share_memory()
-        startqs, stopqs, test_startq, test_stopq, procs, test_proc = self.create_clones(rollout, {}, make_env)
+        startqs, stopqs, test_startq, test_stopq, procs, test_proc = self.create_clones(rollout, buffer, make_env)
 
         # train
         step = 0
