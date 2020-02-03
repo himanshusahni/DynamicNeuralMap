@@ -26,7 +26,7 @@ if __name__ == '__main__':
     parser.add_argument('--frame_stack',
                         help='how many observations form a state',
                         type=int,
-                        default=4)
+                        default=1)
     parser.add_argument('--seed',
                         help='random seed',
                         type=int,
@@ -55,7 +55,7 @@ if __name__ == '__main__':
                         help='environment name',)
     args = parser.parse_args()
 
-    args.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    args.device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 
     args.env = 'PhysEnv'
 
@@ -69,6 +69,9 @@ if __name__ == '__main__':
     elif args.mode == 'stack':
         state_shape = (3, 84, 84)
         trunk = ConvTrunk84
+    elif args.mode == 'lstm':
+        state_shape = (256,)
+        trunk = FCTrunk
     if len(state_shape) == 1:
         state_shape = (state_shape[0] * args.frame_stack,)
     else:
@@ -81,30 +84,14 @@ if __name__ == '__main__':
         return AttentionConstrainedEnvironment(env_size=84, attn_size=21, device=args.device)
 
     policy = policies.MultinomialPolicy()
-    ppo = algorithms.PPO(
-        actor_critic_arch=networks.ActorCritic,
-        trunk_arch=trunk,
-        state_shape=state_shape,
-        action_space=nb_actions,
-        policy=policy,
-        ppo_epochs=4,
-        clip_param=0.1,
-        target_kl=0.01,
-        minibatch_size=256,
-        device=args.device,
-        gamma=args.gamma,
-        lam=0.95,
-        clip_value_loss=False,
-        value_loss_weighting=0.5,
-        entropy_weighting=0.01)
-    savedir = '/home/himanshu/experiments/DynamicNeuralMap/PhysEnv/RL_framestack'
+    savedir = '/home/himanshu/experiments/DynamicNeuralMap/PhysEnv/RL_DMM_refactored_refresh'
     calls = [callbacks.PrintCallback(freq=10),
              callbacks.SaveMetrics(
                  save_dir=savedir,
                  freq=1000,),
              ]
     agent = DMMAgent(
-        algorithm=ppo,
+        trunk=trunk,
         policy=policy,
         memory_mode=args.mode,
         nb_threads=args.nb_threads,

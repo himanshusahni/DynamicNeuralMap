@@ -3,10 +3,10 @@ import torch.optim as optim
 import torch.multiprocessing as mp
 from torch.distributions import Categorical, MultivariateNormal
 
-from pytorch_rl import policies, algorithms, agents
+from pytorch_rl import policies, algorithms, agents, networks
 from pytorch_rl.utils import AverageMeter
 
-from dynamicmap import DynamicMap, StackMemory
+from dynamicmap import DynamicMap, StackMemory, LSTMMemory
 from networks import *
 
 import numpy as np
@@ -181,7 +181,7 @@ class AttentionConstrainedEnvironment:
 
 
 class DMMAgent():
-    def __init__(self, algorithm, policy, memory_mode, nb_threads, nb_rollout_steps,
+    def __init__(self, trunk, policy, memory_mode, nb_threads, nb_rollout_steps,
                  max_env_steps, state_shape, test_freq, obs_shape, frame_stack,
                  attn_size, batchsize, max_buffer_len, agent_train_delay,
                  device, callbacks):
@@ -196,7 +196,7 @@ class DMMAgent():
         :param max_buffer_len: length of buffer storing samples for DMM updates
         :param agent_train_delay: minimum number of samples DMM has been trained on before starting agent training
         """
-        self.algorithm = algorithm
+        self.trunk = trunk
         self.policy = policy
         self.memory_mode = memory_mode
         self.nb_threads = nb_threads
@@ -214,6 +214,22 @@ class DMMAgent():
 
         self.max_train_steps = int(max_env_steps // (nb_threads * nb_rollout_steps))
         self.dmm_train_delay = self.max_buffer_len * self.nb_threads // 2
+        self.algorithm = algorithms.PPO(
+            actor_critic_arch=networks.ActorCritic,
+            trunk_arch=trunk,
+            state_shape=state_shape,
+            action_space=4,
+            policy=policy,
+            ppo_epochs=4,
+            clip_param=0.1,
+            target_kl=0.01,
+            minibatch_size=256,
+            device=device,
+            gamma=0.99,
+            lam=0.95,
+            clip_value_loss=False,
+            value_loss_weighting=0.5,
+            entropy_weighting=0.01)
 
         if memory_mode == 'dmm':
             # create DMM
@@ -227,6 +243,8 @@ class DMMAgent():
                 device=device)
         elif memory_mode == 'stack':
             self.map = StackMemory(frame_stack, obs_shape[1], obs_shape[0], batchsize, device)
+        elif memory_mode == 'lstm':
+            self.map = LSTMMemory(state_shape[0], obs_shape[1], obs_shape[0], batchsize, device, nb_actions=4)
         self.map.share_memory()
         self.map.to(device)
         self.lr = 1e-4
@@ -234,9 +252,13 @@ class DMMAgent():
         # create glimpse agent
         if memory_mode == 'dmm':
             glimpse_policy_network = PolicyFunction_21_84(channels=state_shape[0])
+            glimpse_value_network = ValueFunction(channels=state_shape[0], input_size=state_shape[1])
         elif memory_mode == 'stack':
             glimpse_policy_network = PolicyFunction_x_x(channels=state_shape[0])
-        glimpse_value_network = ValueFunction(channels=state_shape[0], input_size=state_shape[1])
+            glimpse_value_network = ValueFunction(channels=state_shape[0], input_size=state_shape[1])
+        elif memory_mode == 'lstm':
+            glimpse_policy_network = LSTMPolicyFunction84(in_shape=state_shape)
+            glimpse_value_network = LSTMValueFunction(in_shape=state_shape)
         glimpse_policy_network.share_memory()
         glimpse_value_network.share_memory()
         self.glimpse_agent = GlimpseAgent(
@@ -270,6 +292,8 @@ class DMMAgent():
                     device=device)
             elif memory_mode == 'stack':
                 self.map = StackMemory(map.k, map.size, map.channels, 1, device)
+            elif memory_mode == 'lstm':
+                self.map = LSTMMemory(256, map.size, map.env_size, 1, device, nb_actions=map.nb_actions)
             self.map.assign(map)
             # similarly, create this thread's own glimpse agent
             self.glimpse_agent = GlimpseAgent(
@@ -313,8 +337,6 @@ class DMMAgent():
                         self.buffer['unmasked_obs'][self.t, self.buffer_idx] = unmasked_obs.cpu()
                         self.buffer['masks'][self.t, self.buffer_idx] = mask.cpu()
                         self.buffer['glimpse_actions'][self.t, self.buffer_idx] = glimpse_action.cpu()
-                    else:
-                        self.buffer = {}
                     # prepare to take a step in the environment!
                     action = self.policy(pi(state)).detach()
                     # step the map forward according to agent action
@@ -341,8 +363,6 @@ class DMMAgent():
                         self.buffer['actions'][self.t, self.buffer_idx] = action.cpu()
                         self.buffer['rewards'][self.t, self.buffer_idx] = r
                         self.buffer['dones'][self.t, self.buffer_idx] = float(done)
-                    else:
-                        self.buffer = {}
                     # move to next step
                     obs = next_obs
                     unmasked_obs = next_unmasked_obs
@@ -458,6 +478,55 @@ class DMMAgent():
         dones = torch.cat(dones, dim=0).to(self.device)
         return glimpses, masks, unmasked_glimpses, glimpse_states, glimpse_logits, glimpse_actions, actions, rewards, dones
 
+    def create_clones(self, rollout, buffer, make_env):
+        procs = []
+        clones = []
+        # stopqs and startqs tell when the actors should collect rollouts
+        stopqs = []
+        startqs = []
+        for t in range(self.nb_threads):
+            startq = mp.Queue(1)
+            startqs.append(startq)
+            stopq = mp.Queue(1)
+            stopqs.append(stopq)
+            c = self.Clone(
+                thread_num=t,
+                policy=self.policy,
+                memory_mode=self.memory_mode,
+                map=self.map,
+                glimpse_agent=self.glimpse_agent,
+                nb_rollout=self.nb_rollout_steps,
+                rollout=rollout,
+                buffer=buffer,
+                buffer_len=self.max_buffer_len,
+                device=self.device,
+            )
+            clones.append(c)
+            proc = mp.Process(target=c.run, args=(self.algorithm.pi, make_env(), startq, stopq))
+            procs.append(proc)
+            proc.start()
+        # have a thread for testing
+        test_startq = mp.Queue(1)
+        test_stopq = mp.Queue(1)
+        test_clone = self.Clone(
+            thread_num=t + 1,
+            policy=self.policy,
+            memory_mode=self.memory_mode,
+            map=self.map,
+            glimpse_agent=self.glimpse_agent,
+            nb_rollout=self.nb_rollout_steps,
+            rollout=rollout,
+            buffer=buffer,
+            buffer_len=self.max_buffer_len,
+            device=self.device,
+        )
+        clones.append(test_clone)
+        test_proc = mp.Process(
+            target=test_clone.test_run,
+            args=(self.algorithm.pi, make_env(), test_startq, test_stopq))
+        test_proc.start()
+        return startqs, stopqs, test_startq, test_stopq, procs, test_proc
+
     def train(self, make_env):
         """
         main train method for both RL and DMM from experience.
@@ -521,51 +590,10 @@ class DMMAgent():
                 self.nb_threads,
                 self.max_buffer_len).share_memory_(),
         }
-        # stopqs and startqs tell when the actors should collect rollouts
-        stopqs = []
-        startqs = []
+
         # make the policy available to all processes
         self.algorithm.actor_critic.share_memory()
-        procs = []
-        for t in range(self.nb_threads):
-            startq = mp.Queue(1)
-            startqs.append(startq)
-            stopq = mp.Queue(1)
-            stopqs.append(stopq)
-            c = self.Clone(
-                thread_num=t,
-                policy=self.policy,
-                memory_mode=self.memory_mode,
-                map=self.map,
-                glimpse_agent=self.glimpse_agent,
-                nb_rollout=self.nb_rollout_steps,
-                rollout=rollout,
-                buffer=buffer,
-                buffer_len=self.max_buffer_len,
-                device = self.device,
-            )
-            proc = mp.Process(target=c.run, args=(self.algorithm.pi, make_env(), startq, stopq))
-            procs.append(proc)
-            proc.start()
-        # have a thread for testing
-        test_startq = mp.Queue(1)
-        test_stopq = mp.Queue(1)
-        test_clone = self.Clone(
-            thread_num=t+1,
-            policy=self.policy,
-            memory_mode=self.memory_mode,
-            map=self.map,
-            glimpse_agent=self.glimpse_agent,
-            nb_rollout=self.nb_rollout_steps,
-            rollout=rollout,
-            buffer=buffer,
-            buffer_len=self.max_buffer_len,
-            device=self.device,
-        )
-        test_proc = mp.Process(
-            target=test_clone.test_run,
-            args=(self.algorithm.pi, make_env(), test_startq, test_stopq))
-        test_proc.start()
+        startqs, stopqs, test_startq, test_stopq, procs, test_proc = self.create_clones(rollout, {}, make_env)
 
         # train
         step = 0
@@ -595,7 +623,14 @@ class DMMAgent():
             })
         elif self.memory_mode == 'stack':
             metrics['map/masked_loss'] = AverageMeter(history=100)
+        elif self.memory_mode == 'lstm':
+            metrics.update({
+                'map/write_cost': AverageMeter(history=100),
+                'map/step_cost': AverageMeter(history=100),
+                'map/post_step': AverageMeter(history=100),
+            })
 
+        nb_dmm_updates = 15
         while step < self.max_train_steps:
             # start collecting data
             for start in startqs:
@@ -616,11 +651,32 @@ class DMMAgent():
 
             # train DMM!
             if samples_added > self.dmm_train_delay:
-                if step < 10000:
-                    nb_dmm_updates = 15
-                else:
+                if step == 10000:
                     nb_dmm_updates = 0
-                    buffer = {}
+                    for p in procs:
+                        p.terminate()
+                    test_proc.terminate()
+                    del buffer
+                    # start anew
+                    self.algorithm = algorithms.PPO(
+                        actor_critic_arch=networks.ActorCritic,
+                        trunk_arch=self.trunk,
+                        state_shape=self.state_shape,
+                        action_space=4,
+                        policy=self.policy,
+                        ppo_epochs=4,
+                        clip_param=0.1,
+                        target_kl=0.01,
+                        minibatch_size=256,
+                        device=self.device,
+                        gamma=0.99,
+                        lam=0.95,
+                        clip_value_loss=False,
+                        value_loss_weighting=0.5,
+                        entropy_weighting=0.01)
+                    self.algorithm.actor_critic.share_memory()
+                    startqs, stopqs, test_startq, test_stopq, procs, test_proc = self.create_clones(rollout, {},
+                                                                                                make_env)
                 for _ in range(nb_dmm_updates):
                     seqlen = 25
                     glimpses, masks, unmasked_glimpses, glimpse_states, glimpse_logits, glimpse_actions, actions, rewards, dones = \

@@ -298,12 +298,180 @@ class DynamicMap(MemoryArch):
 
     def load(self, path):
         models = torch.load(path, map_location='cpu')
-        self.write_model = models['write']
-        self.blend_model = models['blend']
-        self.step_model = models['step']
-        self.reconstruction_model = models['reconstruct']
+        # self.write_model = models['write']
+        # self.blend_model = models['blend']
+        # self.step_model = models['step']
+        # self.reconstruction_model = models['reconstruct']
+        # if hasattr(self, 'agent_step_model'):
+        #     self.agent_step_model = models['agent step']
+        self.write_model.load_state_dict(models['write'])
+        self.blend_model.load_state_dict(models['blend'])
+        self.step_model.load_state_dict(models['step'])
+        self.reconstruction_model.load_state_dict(models['reconstruct'])
         if hasattr(self, 'agent_step_model'):
-            self.agent_step_model = models['agent step']
+            self.agent_step_model.load_state_dict(models['agent step'])
+
+
+class LSTMMemory(MemoryArch):
+    """Flat LSTM"""
+
+    def __init__(self, size, env_size, env_channels, batchsize, device, nb_actions=None):
+        self.size = size
+        self.env_size = env_size
+        self.channels = env_channels
+        self.batchsize = batchsize
+        self.obs_shape = (batchsize, env_channels, env_size, env_size)
+        self.device = device
+        self.nb_actions = nb_actions
+        self.write_model = LSTMWrite84(in_channels=env_channels, out_size=size)
+        self.lstm = nn.LSTM(size, size)
+        self.reconstruction_model = LSTMReconstruction84(
+            in_size=size,
+            out_channels=env_channels)
+        self.agent_step_model = LSTMStepConditional(size, nb_actions)
+
+    def reset(self):
+        """Architecture has to be reset at end of episode."""
+        self.hidden = (torch.zeros(1, self.batchsize, self.size).to(self.device),
+                       torch.zeros(1, self.batchsize, self.size).to(self.device))
+
+    def detach(self):
+        """stopping gradient flow for learnt methods."""
+        self.hidden = (self.hidden[0].detach(), self.hidden[1].detach())
+
+    def write(self, glimpse, obs_mask, minus_obs_mask):
+        """what is to be written based on observation"""
+        # process through the convnet architecture
+        w = self.write_model(glimpse)
+        # then step the whole thing through the lstm
+        _, self.hidden = self.lstm(w.unsqueeze(dim=0), self.hidden)
+        return w.abs().mean()
+
+    def content(self):
+        """current state of the memory"""
+        return self.hidden[0].squeeze(dim=0)
+
+    def reconstruct(self):
+        """attempt to reconstruct environment"""
+        return self.reconstruction_model(self.content())
+
+    def step(self, action=None):
+        """step the hidden state of lstm"""
+        # first embed agent motion
+        action = self.agent_step_model(action)
+        # then pass if through lstm again
+        _, self.hidden = self.lstm(action.unsqueeze(dim=0), self.hidden)
+        return action.abs().mean()
+
+
+    def lossbatch(self, state_batch, action_batch, reward_batch,
+                  glimpse_agent, training_metrics,
+                  mask_batch=None, unmasked_state_batch=None, glimpse_state_batch=None, glimpse_action_batch=None):
+        mse = MSEMasked()
+        mse_unmasked = nn.MSELoss()
+        total_write_loss = 0
+        total_step_loss = 0
+        total_post_step_loss = 0
+        overall_reconstruction_loss = 0
+        min_overall_reconstruction_loss = 1.
+        # initialize map
+        self.reset()
+        # get an empty reconstruction
+        post_step_reconstruction = self.reconstruct()
+        loss = 0
+        seq_len = state_batch.size(0)
+        batch_size = state_batch.size(1)
+        for t in range(seq_len):
+            # pick locations of attention
+            if mask_batch is None:
+                # glimpse agent is online
+                loc = glimpse_agent.step(self.content().detach(), random=False)
+                obs_mask, minus_obs_mask = glimpse_agent.create_attn_mask(loc)
+            else:
+                obs_mask = mask_batch[t]
+                minus_obs_mask = 1 - obs_mask
+                glimpse_agent.states.append(glimpse_state_batch[t])
+                glimpse_agent.actions.append(glimpse_action_batch[t])
+            post_step_loss = mse(post_step_reconstruction, state_batch[t], obs_mask)
+            glimpse_agent.reward(post_step_loss.detach())
+            post_step_loss = post_step_loss.mean()
+            if unmasked_state_batch is None:
+                recontruction_loss = mse_unmasked(post_step_reconstruction, state_batch[t]).mean()
+            else:
+                recontruction_loss = mse_unmasked(post_step_reconstruction, unmasked_state_batch[t]).mean()
+            # write new observation to map
+            obs = state_batch[t] * obs_mask
+            write_cost = self.write(obs, obs_mask, minus_obs_mask)
+            # step forward the internal map
+            actions = action_batch[t].unsqueeze(dim=1)
+            onehot_action = torch.zeros(batch_size, 4).to(self.device)
+            onehot_action.scatter_(1, actions, 1)
+            step_cost = self.step(onehot_action)
+            post_step_reconstruction = self.reconstruct()
+            # add up all losses
+            loss += 0.01 * (write_cost + step_cost) + post_step_loss
+            # loss += 0.01 * (write_cost + step_cost) + post_step_loss
+            total_write_loss += 0.01 * write_cost.item()
+            total_step_loss += 0.01 * + step_cost.item()
+            total_post_step_loss += post_step_loss.item()
+            overall_reconstruction_loss += recontruction_loss.item()
+            if t == 0:
+                min_overall_reconstruction_loss = recontruction_loss.item()
+            elif recontruction_loss.item() < min_overall_reconstruction_loss:
+                min_overall_reconstruction_loss = recontruction_loss.item()
+        # update the training metrics
+        training_metrics['map/write_cost'].update(total_write_loss / seq_len)
+        training_metrics['map/step_cost'].update(total_step_loss / seq_len)
+        training_metrics['map/post_step'].update(total_post_step_loss / seq_len)
+        training_metrics['map/overall'].update(overall_reconstruction_loss / seq_len)
+        training_metrics['map/min_overall'].update(min_overall_reconstruction_loss)
+        return loss
+
+
+    def assign(self, other):
+        self.write_model = other.write_model
+        self.lstm = other.lstm
+        self.reconstruction_model = other.reconstruction_model
+        self.agent_step_model = other.agent_step_model
+
+    def to(self, device):
+        """
+        move trainable modules to device
+        :param device: cpu or gpus
+        """
+        self.write_model.to(device)
+        self.lstm.to(device)
+        self.reconstruction_model.to(device)
+        self.agent_step_model.to(device)
+
+    def share_memory(self):
+        """share trainable modules across threads"""
+        self.write_model.share_memory()
+        self.lstm.share_memory()
+        self.reconstruction_model.share_memory()
+        self.agent_step_model.share_memory()
+
+    def parameters(self):
+        """all trainable parameters returns here"""
+        return list(self.reconstruction_model.parameters()) +\
+               list(self.lstm.parameters()) +\
+               list(self.write_model.parameters()) +\
+               list(self.agent_step_model.parameters())
+
+    def tosave(self):
+        """return all trainable modules that should be saved"""
+        return {'write': self.write_model.state_dict(),
+                'lstm': self.lstm.state_dict(),
+                'reconstruct': self.reconstruction_model.state_dict(),
+                'agent step': self.agent_step_model.state_dict()}
+
+    def load(self, path):
+        """load all trainable modules from a path"""
+        models = torch.load(path, map_location='cpu')
+        self.write_model.load_state_dict(models['write'])
+        self.lstm.load_state_dict(models['lstm'])
+        self.reconstruction_model.load_state_dict(models['reconstruct'])
+        self.agent_step_model.load_state_dict(models['agent step'])
 
 
 class StackMemory(MemoryArch):
@@ -311,7 +479,6 @@ class StackMemory(MemoryArch):
 
     def __init__(self, frame_stack, env_size, env_channels, batchsize, device):
         self.k = frame_stack
-        self.size = env_size
         self.channels = env_channels
         self.batchsize = batchsize
         self.obs_shape = (batchsize, env_channels, env_size, env_size)

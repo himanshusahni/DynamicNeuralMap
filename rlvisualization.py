@@ -10,11 +10,13 @@ import torch.nn.functional as F
 
 from pytorch_rl.utils import ImgToTensor
 from pytorch_rl.policies import MultinomialPolicy
+import pytorch_rl.networks as networks
 from phys_env.phys_env import PhysEnv
 
 from dynamicmap import DynamicMap
 import utils
 from rl import GlimpseAgent, AttentionConstrainedEnvironment
+from networks import *
 
 # torch.manual_seed(123)
 # np.random.seed(123)
@@ -34,8 +36,12 @@ map = DynamicMap(
 
 mse = torch.nn.MSELoss(reduction='none')
 mse_masked = utils.MSEMasked()
-for step in range(12600, 12700, 100):
-    ac = torch.load(os.path.join(d, 'actor_critic_{}.pth'.format(step)), map_location=device)
+for step in range(10100, 10200, 100):
+    trunk = ConvTrunk21
+    ac = networks.ActorCritic(trunk, (48, 21, 21), 4)
+    ac.to(device)
+    ac.load_state_dict(torch.load(os.path.join(d, 'actor_critic_{}.pth'.format(step)), map_location=device)['actor_critic'])
+
 
     model_dir = d
     path = os.path.join(model_dir, 'map_{}.pth'.format(step))
@@ -43,8 +49,10 @@ for step in range(12600, 12700, 100):
     map.to(device)
     path = os.path.join(model_dir, 'glimpse_{}.pth'.format(step))
     glimpsenet = torch.load(path, map_location='cpu')
-    glimpse_pi = glimpsenet['policy_network'].to(device)
-    glimpse_V = glimpsenet['value_network'].to(device)
+    glimpse_pi = PolicyFunction_21_84(channels=48).to(device)
+    glimpse_V = ValueFunction(channels=48, input_size=21).to(device)
+    glimpse_pi.load_state_dict(glimpsenet['policy_network'])
+    glimpse_V.load_state_dict(glimpsenet['value_network'])
     # glimpse_pi = glimpsenet.policy_head
     # glimpse_V = glimpsenet.value_head
     glimpse_agent = GlimpseAgent(
