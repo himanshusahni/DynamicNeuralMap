@@ -289,6 +289,7 @@ class LSTMStepConditional(nn.Module):
         super(LSTMStepConditional, self).__init__()
         # convolve
         self.fc_action = torch.nn.Linear(nb_actions, size)
+        self.fc1 = torch.nn.Linear(size * 2, size)
         self.print_info()
 
     def print_info(self):
@@ -296,9 +297,11 @@ class LSTMStepConditional(nn.Module):
         print(self)
         print("Total Linear params: {}".format(sum([p.numel() for p in self.parameters() if p.requires_grad])))
 
-    def forward(self, a):
+    def forward(self, w, a):
         a = F.leaky_relu(self.fc_action(a), 0.2)
-        return a
+        w = torch.cat((w, a), dim=1)
+        w = F.leaky_relu(self.fc1(w), 0.2)
+        return w
 
 
 class MapStepResidualConditional(nn.Module):

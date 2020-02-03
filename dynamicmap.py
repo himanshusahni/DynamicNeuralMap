@@ -334,6 +334,7 @@ class LSTMMemory(MemoryArch):
         """Architecture has to be reset at end of episode."""
         self.hidden = (torch.zeros(1, self.batchsize, self.size).to(self.device),
                        torch.zeros(1, self.batchsize, self.size).to(self.device))
+        self.action = torch.zeros(self.batchsize, self.nb_actions)
 
     def detach(self):
         """stopping gradient flow for learnt methods."""
@@ -341,8 +342,10 @@ class LSTMMemory(MemoryArch):
 
     def write(self, glimpse, obs_mask, minus_obs_mask):
         """what is to be written based on observation"""
-        # process through the convnet architecture
+        # process the observation through the convnet architecture
         w = self.write_model(glimpse)
+        # then embed agent motion from previous step
+        w = self.agent_step_model(w, self.action)
         # then step the whole thing through the lstm
         _, self.hidden = self.lstm(w.unsqueeze(dim=0), self.hidden)
         return w.abs().mean()
@@ -356,13 +359,8 @@ class LSTMMemory(MemoryArch):
         return self.reconstruction_model(self.content())
 
     def step(self, action=None):
-        """step the hidden state of lstm"""
-        # first embed agent motion
-        action = self.agent_step_model(action)
-        # then pass if through lstm again
-        _, self.hidden = self.lstm(action.unsqueeze(dim=0), self.hidden)
-        return action.abs().mean()
-
+        """store agent action taken"""
+        self.action = action
 
     def lossbatch(self, state_batch, action_batch, reward_batch,
                   glimpse_agent, training_metrics,
@@ -370,7 +368,6 @@ class LSTMMemory(MemoryArch):
         mse = MSEMasked()
         mse_unmasked = nn.MSELoss()
         total_write_loss = 0
-        total_step_loss = 0
         total_post_step_loss = 0
         overall_reconstruction_loss = 0
         min_overall_reconstruction_loss = 1.
@@ -406,13 +403,11 @@ class LSTMMemory(MemoryArch):
             actions = action_batch[t].unsqueeze(dim=1)
             onehot_action = torch.zeros(batch_size, 4).to(self.device)
             onehot_action.scatter_(1, actions, 1)
-            step_cost = self.step(onehot_action)
+            self.step(onehot_action)
             post_step_reconstruction = self.reconstruct()
             # add up all losses
-            loss += 0.01 * (write_cost + step_cost) + post_step_loss
-            # loss += 0.01 * (write_cost + step_cost) + post_step_loss
+            loss += 0.01 * (write_cost) + post_step_loss
             total_write_loss += 0.01 * write_cost.item()
-            total_step_loss += 0.01 * + step_cost.item()
             total_post_step_loss += post_step_loss.item()
             overall_reconstruction_loss += recontruction_loss.item()
             if t == 0:
@@ -421,7 +416,6 @@ class LSTMMemory(MemoryArch):
                 min_overall_reconstruction_loss = recontruction_loss.item()
         # update the training metrics
         training_metrics['map/write_cost'].update(total_write_loss / seq_len)
-        training_metrics['map/step_cost'].update(total_step_loss / seq_len)
         training_metrics['map/post_step'].update(total_post_step_loss / seq_len)
         training_metrics['map/overall'].update(overall_reconstruction_loss / seq_len)
         training_metrics['map/min_overall'].update(min_overall_reconstruction_loss)

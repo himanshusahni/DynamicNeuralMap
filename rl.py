@@ -610,7 +610,6 @@ class DMMAgent():
         elif self.memory_mode == 'lstm':
             metrics.update({
                 'map/write_cost': AverageMeter(history=100),
-                'map/step_cost': AverageMeter(history=100),
                 'map/post_step': AverageMeter(history=100),
             })
 
