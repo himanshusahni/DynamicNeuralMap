@@ -305,13 +305,16 @@ class DMMAgent():
                         if ep_len > 0:
                             avg_ep_len.update(ep_len)
                         ep_len = 0
-                    # add attention related observations to buffer
-                    self.buffer['states'][self.t, self.buffer_idx] = glimpse_state.cpu()
-                    self.buffer['logits'][self.t, self.buffer_idx] = glimpse_logits.cpu()
-                    self.buffer['obs'][self.t, self.buffer_idx] = obs.cpu()
-                    self.buffer['unmasked_obs'][self.t, self.buffer_idx] = unmasked_obs.cpu()
-                    self.buffer['masks'][self.t, self.buffer_idx] = mask.cpu()
-                    self.buffer['glimpse_actions'][self.t, self.buffer_idx] = glimpse_action.cpu()
+                    if global_step < 10000:
+                        # add attention related observations to buffer
+                        self.buffer['states'][self.t, self.buffer_idx] = glimpse_state.cpu()
+                        self.buffer['logits'][self.t, self.buffer_idx] = glimpse_logits.cpu()
+                        self.buffer['obs'][self.t, self.buffer_idx] = obs.cpu()
+                        self.buffer['unmasked_obs'][self.t, self.buffer_idx] = unmasked_obs.cpu()
+                        self.buffer['masks'][self.t, self.buffer_idx] = mask.cpu()
+                        self.buffer['glimpse_actions'][self.t, self.buffer_idx] = glimpse_action.cpu()
+                    else:
+                        self.buffer = {}
                     # prepare to take a step in the environment!
                     action = self.policy(pi(state)).detach()
                     # step the map forward according to agent action
@@ -333,10 +336,13 @@ class DMMAgent():
                     self.rollout['actions'][self.t, step] = action
                     self.rollout['rewards'][self.t, step] = r
                     self.rollout['dones'][self.t, step] = float(done)
-                    # add some of the info to map buffer as well
-                    self.buffer['actions'][self.t, self.buffer_idx] = action.cpu()
-                    self.buffer['rewards'][self.t, self.buffer_idx] = r
-                    self.buffer['dones'][self.t, self.buffer_idx] = float(done)
+                    if global_step < 10000:
+                        # add some of the info to map buffer as well
+                        self.buffer['actions'][self.t, self.buffer_idx] = action.cpu()
+                        self.buffer['rewards'][self.t, self.buffer_idx] = r
+                        self.buffer['dones'][self.t, self.buffer_idx] = float(done)
+                    else:
+                        self.buffer = {}
                     # move to next step
                     obs = next_obs
                     unmasked_obs = next_unmasked_obs
@@ -614,6 +620,7 @@ class DMMAgent():
                     nb_dmm_updates = 15
                 else:
                     nb_dmm_updates = 0
+                    buffer = {}
                 for _ in range(nb_dmm_updates):
                     seqlen = 25
                     glimpses, masks, unmasked_glimpses, glimpse_states, glimpse_logits, glimpse_actions, actions, rewards, dones = \
