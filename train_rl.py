@@ -4,6 +4,7 @@ import torch
 import torch.multiprocessing as mp
 
 from networks import *
+
 from rl import DMMAgent, AttentionConstrainedEnvironment
 
 from pytorch_rl import utils, callbacks, agents, algorithms, policies, networks
@@ -69,6 +70,9 @@ if __name__ == '__main__':
     elif args.mode == 'stack':
         state_shape = (3, 84, 84)
         trunk = ConvTrunk84
+    elif args.mode == 'full':
+        state_shape = (3, 84, 84)
+        trunk = ConvTrunk84
     elif args.mode == 'lstm':
         state_shape = (256,)
         trunk = FCTrunk
@@ -106,23 +110,36 @@ if __name__ == '__main__':
         clip_value_loss=False,
         value_loss_weighting=0.5,
         entropy_weighting=0.01)
-    agent = DMMAgent(
-        algorithm=ppo,
-        policy=policy,
-        memory_mode=args.mode,
-        nb_threads=args.nb_threads,
-        nb_rollout_steps=args.nb_rollout_steps,
-        max_env_steps=1.01*args.max_train_steps,
-        state_shape=state_shape,
-        test_freq=args.test_freq,
-        obs_shape=obs_shape,
-        frame_stack=args.frame_stack,
-        attn_size=21,
-        batchsize=8,
-        max_buffer_len=12500,
-        agent_train_delay=30000,
-        device=args.device,
-        callbacks=calls,)
+    if args.mode == 'full':
+        agent = agents.MultithreadedOnPolicyDiscreteAgent(
+            algorithm=ppo,
+            policy=policy,
+            nb_threads=args.nb_threads,
+            nb_rollout_steps=args.nb_rollout_steps,
+            max_env_steps=1.01*args.max_train_steps,
+            state_shape=state_shape,
+            test_freq=args.test_freq,
+            frame_stack=args.frame_stack,
+            device=args.device,
+            callbacks=calls,)
+    else:
+        agent = DMMAgent(
+            algorithm=ppo,
+            policy=policy,
+            memory_mode=args.mode,
+            nb_threads=args.nb_threads,
+            nb_rollout_steps=args.nb_rollout_steps,
+            max_env_steps=1.01*args.max_train_steps,
+            state_shape=state_shape,
+            test_freq=args.test_freq,
+            obs_shape=obs_shape,
+            frame_stack=args.frame_stack,
+            attn_size=21,
+            batchsize=8,
+            max_buffer_len=12500,
+            agent_train_delay=30000,
+            device=args.device,
+            callbacks=calls,)
     agent.callbacks.append(callbacks.SaveNetworks(
         save_dir=savedir,
         freq=100,
