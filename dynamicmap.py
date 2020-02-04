@@ -334,7 +334,7 @@ class LSTMMemory(MemoryArch):
         """Architecture has to be reset at end of episode."""
         self.hidden = (torch.zeros(1, self.batchsize, self.size).to(self.device),
                        torch.zeros(1, self.batchsize, self.size).to(self.device))
-        self.action = torch.zeros(self.batchsize, self.nb_actions)
+        self.action = torch.zeros(self.batchsize, self.nb_actions).to(self.device)
 
     def detach(self):
         """stopping gradient flow for learnt methods."""
