@@ -67,6 +67,9 @@ if __name__ == '__main__':
     if args.mode == 'dmm':
         state_shape = (48, 21, 21)
         trunk = ConvTrunk21
+    elif args.mode == 'spatial':
+        state_shape = (48, 21, 21)
+        trunk = ConvTrunk21
     elif args.mode == 'stack':
         state_shape = (3, 84, 84)
         trunk = ConvTrunk84
