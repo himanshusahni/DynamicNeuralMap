@@ -252,7 +252,8 @@ class DynamicMap(MemoryArch):
         self.step_model = other.step_model
         self.reconstruction_model = other.reconstruction_model
         self.blend_model = other.blend_model
-        self.agent_step_model = other.agent_step_model
+        if hasattr(self, 'agent_step_model'):
+            self.agent_step_model = other.agent_step_model
 
     def to(self, device):
         self.write_model.to(device)
@@ -280,11 +281,13 @@ class DynamicMap(MemoryArch):
         return allparams
 
     def tosave(self):
-        return {'write': self.write_model.state_dict(),
-                'blend': self.blend_model.state_dict(),
-                'step': self.step_model.state_dict(),
-                'reconstruct': self.reconstruction_model.state_dict(),
-                'agent step': self.agent_step_model.state_dict()}
+        toreturn = {'write': self.write_model.state_dict(),
+                    'blend': self.blend_model.state_dict(),
+                    'step': self.step_model.state_dict(),
+                    'reconstruct': self.reconstruction_model.state_dict(),}
+        if hasattr(self, 'agent_step_model'):
+            toreturn['agent step'] = self.agent_step_model.state_dict()
+        return toreturn
 
     def save(self, path):
         tosave = {
@@ -580,12 +583,13 @@ class StackMemory(MemoryArch):
         self.reconstruction_model = torch.load(path, map_location='cpu')
 
 
-class SpatialNet():
-    """reimplementation of Spatial Net"""
+class SpatialNet(DynamicMap):
+    """Dynamic map without special write and step"""
     def __init__(self, size, channels, env_size, env_channels, batchsize, device):
         self.size = size
         self.channels = channels
         self.env_size = env_size
+        self.env_channels = env_channels
         self.batchsize = batchsize
         self.device = device
         if env_size == 84 and size == 21:
@@ -594,23 +598,8 @@ class SpatialNet():
         # elif env_size == 84 and size == 84:
         #     self.write_model = MapWrite_84_84(in_channels=env_channels, out_channels=channels)
         #     self.reconstruction_model = MapReconstruction_84_84(in_channels=channels, out_channels=env_channels)
-        self.step_model = MapStepSpatial(in_channels=channels, out_channels=channels)
-        self.blend_model = MapBlendSpatial(in_channels=channels * 2, out_channels=channels)
-
-    def to(self, device):
-        self.write_model.to(device)
-        self.step_model.to(device)
-        self.reconstruction_model.to(device)
-        self.blend_model.to(device)
-
-    def reset(self):
-        """
-        reset the map to beginning of episode
-        """
-        self.map = torch.zeros((self.batchsize, self.channels, self.size, self.size)).to(self.device)
-        self.allmaps = [self.map,]
-        self.obs = torch.zeros((self.batchsize, self.channels, self.size, self.size)).to(self.device)
-        self.allobs = [self.obs,]
+        self.blend_model = MapBlend(in_channels=channels*2, out_channels=channels)
+        self.step_model = MapStepResidual(in_channels=channels, out_channels=channels)
 
     def write(self, glimpse, obs_mask, minus_obs_mask):
         """
@@ -619,46 +608,22 @@ class SpatialNet():
         :param attn: indices of above glimpse in map coordinates (where to write)
         """
         # what to write
-        self.obs = self.write_model(glimpse)
-        self.allobs.append(self.obs)
-        return 0
+        w = self.write_model(glimpse)
+        w = self.blend_model(w, self.map.clone())
+        self.map = w
 
-    def step(self):
+        # cost of writing
+        return w.abs().mean()
+
+    def step(self, action=None):
         """
         uses the model to advance the map by a step
         """
-        self.map = self.step_model(self.map, self.obs)
-        self.allmaps.append(self.map)
-        return self.map.abs().mean()
-
-    def reconstruct(self):
-        """
-        attempt to reconstruct the entire state image using current map
-        """
-        blend = self.blend_model(self.map, self.obs)
-        return self.reconstruction_model(blend)
-
-    def parameters(self):
-        return list(self.write_model.parameters()) + \
-               list(self.step_model.parameters()) + \
-               list(self.blend_model.parameters()) + \
-               list(self.reconstruction_model.parameters())
-
-    def save(self, path):
-        torch.save({
-            'write': self.write_model,
-            'step': self.step_model,
-            'blend': self.blend_model,
-            'reconstruct': self.reconstruction_model
-        }, path)
-
-    def load(self, path):
-        models = torch.load(path, map_location='cpu')
-        self.write_model = models['write']
-        self.step_model = models['step']
-        self.blend_model = models['blend']
-        self.reconstruction_model = models['reconstruct']
-
+        # only dynamic part of map is affected
+        dynamic = self.step_model(self.map.clone())
+        cost = dynamic.abs().mean()
+        self.map = dynamic
+        return cost
 
 
 class MapEnvironment():
