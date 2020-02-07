@@ -121,17 +121,10 @@ if __name__ == "__main__":
             if i_batch % 1000 == 0:
                 agentsavepath = os.path.join('/home/himanshu/experiments/DynamicNeuralMap', env_name, '21map_DMM_actioncondition2')
                 print('saving network weights to {} ...'.format(agentsavepath))
-                map.save(os.path.join(agentsavepath, 'map{}.pth'.format(i_batch)))
+                torch.save(map.tosave(), os.path.join(agentsavepath, 'map{}.pth'.format(i_batch)))
                 # glimpse_net = glimpse_agent.ppo.actor_critic
-                glimpse_net = {'policy_network': glimpse_agent.a2c.pi,
-                               'value_network': glimpse_agent.a2c.V}
-                torch.save(glimpse_net, os.path.join(agentsavepath, 'glimpsenet{}.pth'.format(i_batch)))
-            if i_batch > 5000 and i_batch % 2000 == 0:
-                if seq_len < END_SEQ_LEN:
-                    seq_len += 1
-                    print("INCREASING training sequence length to {}".format(seq_len))
-                    dataset.set_seqlen(seq_len)
-                    train_loader = DataLoader(dataset, batch_size=BATCH_SIZE,
-                                              num_workers=8, collate_fn=time_collate,
-                                              drop_last=True, pin_memory=True)
-                    break
+                glimpse_net = {'policy_network': self.glimpse_agent.policy_network.state_dict(),
+                               'value_network': self.glimpse_agent.value_network.state_dict(),
+                               'v_optimizer': self.glimpse_agent.a2c.V_optimizer.state_dict(),
+                               'pi_optimizer': self.glimpse_agent.a2c.pi_optimizer.state_dict()},
+                torch.save(glimpse_net, os.path.join(agentsavepath, 'glimpse{}.pth'.format(i_batch)))
